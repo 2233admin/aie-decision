@@ -2,6 +2,16 @@
 
 Read this reference when constructing input for `aie-decision compile`. The compiler accepts one JSON object and never acquires external data.
 
+## Minimal Fermi input
+
+`aie-decision fermi <input.json>` accepts a smaller first-version object:
+
+- `question`, `target`, `unit`, and an arithmetic `formula` using only `+`, `-`, `*`, and `/`;
+- a non-empty `variables` array whose items contain `name`, `lower`, and `upper`, with optional `unit` and `method`;
+- optional `coverage` (default `0.9`), `reference_value`, `acceptable_width`, and numeric `thresholds`.
+
+The declared coverage applies to the joint input region. The runtime deterministically propagates that region; it does not infer distributions or claim empirical calibration. See `fixtures/fermi/v1/daily-revenue.json` for a runnable example.
+
 ## Required top-level content
 
 `answer_contract` is required and contains:
