@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://aie-decision.local/schemas/v1/evidence-atom.schema.json","title":"AIE Evidence Atom v1","$ref":"evidence-proposition.schema.json"}

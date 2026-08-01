@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/v1/acceptance-executable-case.schema.json",
+  "title": "Acceptance Executable Case Corpus v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_version",
+    "corpus",
+    "evidence_class",
+    "limitations",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "fixture_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "corpus": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_class": {
+      "const": "controlled_mechanism_fixture"
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "case_id",
+          "evidence_class",
+          "input",
+          "provenance"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "evidence_class": {
+            "const": "controlled_mechanism_fixture"
+          },
+          "input": {
+            "type": "object",
+            "required": [
+              "answer_contract",
+              "conditions",
+              "edges",
+              "minimal_sufficient_sets",
+              "sources",
+              "forecast_interval"
+            ],
+            "properties": {
+              "answer_contract": {
+                "type": "object"
+              },
+              "conditions": {
+                "type": "array"
+              },
+              "edges": {
+                "type": "array"
+              },
+              "minimal_sufficient_sets": {
+                "type": "array"
+              },
+              "sources": {
+                "type": "array",
+                "minItems": 1
+              },
+              "forecast_interval": {
+                "type": "object"
+              }
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "fixture_version",
+              "authored_for",
+              "source_kind",
+              "oracle_embedded"
+            ],
+            "properties": {
+              "fixture_version": {
+                "type": "string"
+              },
+              "authored_for": {
+                "type": "string"
+              },
+              "source_kind": {
+                "type": "string"
+              },
+              "oracle_embedded": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

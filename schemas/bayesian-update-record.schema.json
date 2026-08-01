@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://aie-decision.local/schemas/v1/bayesian-update-record.schema.json", "title": "AIE Bayesian Update Record v1", "type": "object",
+  "required": ["schema_version", "update_id", "condition_id", "prior_estimate_id", "new_evidence_atom_ids", "evidence_direction", "evidence_strength", "posterior", "method", "assumptions_changed", "created_at", "provenance", "revision"],
+  "properties": {"schema_version": {"const": "1.0.0"}, "update_id": {"type": "string"}, "condition_id": {"type": "string"}, "prior_estimate_id": {"type": "string"}, "new_evidence_atom_ids": {"type": "array", "minItems": 1}, "evidence_direction": {"type": "string"}, "evidence_strength": {"type": "string"}, "posterior": {"type": "object", "required": ["lower", "upper", "coverage", "coverage_semantics"]}, "method": {"type": "string"}, "assumptions_changed": {"type": "array"}, "created_at": {"type": "string"}, "provenance": {"type": "array", "minItems": 1}, "revision": {"$ref": "common.schema.json#/$defs/revision"}}, "additionalProperties": false
+}

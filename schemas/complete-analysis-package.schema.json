@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://aie-decision.local/schemas/v1/complete-analysis-package.schema.json", "title": "AIE Complete Analysis Package v1", "type": "object",
+  "required": ["schema_version", "package_id", "run_id", "package_state", "answer_contract", "condition_graph", "sources", "evidence_propositions", "event_scene", "missing_conditions", "derived_factors", "calculations", "interval_audit", "conclusion", "answerability", "empty_section_reasons", "revision"],
+  "properties": {"schema_version": {"const": "1.0.0"}, "package_id": {"type": "string"}, "run_id": {"type": "string"}, "package_state": {"const": "complete"}, "answer_contract": {"type": "object"}, "condition_graph": {"type": "object"}, "sources": {"type": "array"}, "evidence_propositions": {"type": "array"}, "event_scene": {"type": ["object", "null"]}, "missing_conditions": {"type": "array"}, "derived_factors": {"type": "array"}, "calculations": {"type": "array"}, "interval_audit": {"type": ["object", "null"]}, "conclusion": {"type": ["object", "null"]}, "answerability": {"$ref": "common.schema.json#/$defs/answerability"}, "empty_section_reasons": {"type": "object"}, "revision": {"$ref": "common.schema.json#/$defs/revision"}},
+  "additionalProperties": true
+}

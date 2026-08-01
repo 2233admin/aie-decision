@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIE Decision"
+  short_description: "Compile supplied evidence into traceable decision packages"
+  default_prompt: "Use $aie-decision to compile my supplied question and evidence into a traceable standalone decision analysis."

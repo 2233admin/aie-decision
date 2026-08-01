@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aie-decision"
+version = "0.1.0"
+description = "Standalone answer-oriented evidence compiler contracts"
+requires-python = ">=3.12"
+
+[project.scripts]
+aie-decision = "aie_decision.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

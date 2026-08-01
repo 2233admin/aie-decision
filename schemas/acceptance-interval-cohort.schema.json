@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/v1/acceptance-interval-cohort.schema.json",
+  "title": "Acceptance Controlled Interval Cohort v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_version",
+    "cohort_id",
+    "evidence_class",
+    "intended_use",
+    "limitations",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "fixture_version": {
+      "type": "string"
+    },
+    "cohort_id": {
+      "type": "string"
+    },
+    "evidence_class": {
+      "const": "controlled_mechanism_fixture"
+    },
+    "intended_use": {
+      "type": "string"
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "case_id",
+          "cohort_id",
+          "evidence_class",
+          "comparability_key",
+          "forecast",
+          "resolved_outcome",
+          "leakage"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "cohort_id": {
+            "type": "string"
+          },
+          "evidence_class": {
+            "const": "controlled_mechanism_fixture"
+          },
+          "comparability_key": {
+            "type": "object",
+            "required": [
+              "target",
+              "horizon",
+              "unit",
+              "population",
+              "coverage_level",
+              "coverage_semantics",
+              "generation_method",
+              "model_revision"
+            ],
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "horizon": {
+                "type": "string"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "population": {
+                "type": "string"
+              },
+              "coverage_level": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "exclusiveMaximum": 1
+              },
+              "coverage_semantics": {
+                "const": "empirical_prediction_interval"
+              },
+              "generation_method": {
+                "type": "string"
+              },
+              "model_revision": {
+                "type": "string"
+              }
+            }
+          },
+          "forecast": {
+            "type": "object",
+            "required": [
+              "lower",
+              "upper",
+              "reference_value",
+              "issued_at",
+              "observation_cutoff",
+              "normalization",
+              "baseline"
+            ],
+            "properties": {
+              "lower": {
+                "type": "number"
+              },
+              "upper": {
+                "type": "number"
+              },
+              "reference_value": {
+                "type": "number"
+              },
+              "issued_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "observation_cutoff": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "normalization": {
+                "const": "reference_value"
+              },
+              "baseline": {
+                "type": "object",
+                "required": [
+                  "lower",
+                  "upper"
+                ]
+              }
+            }
+          },
+          "resolved_outcome": {
+            "type": "object",
+            "required": [
+              "value",
+              "resolved_at",
+              "provenance"
+            ],
+            "properties": {
+              "value": {
+                "type": "number"
+              },
+              "resolved_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "provenance": {
+                "type": "object",
+                "required": [
+                  "source_id",
+                  "locator",
+                  "content_hash"
+                ]
+              }
+            }
+          },
+          "leakage": {
+            "type": "object",
+            "required": [
+              "outcome_available_at_issue",
+              "input_observation_max_time",
+              "verified_no_post_cutoff_input"
+            ],
+            "properties": {
+              "outcome_available_at_issue": {
+                "const": false
+              },
+              "input_observation_max_time": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "verified_no_post_cutoff_input": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

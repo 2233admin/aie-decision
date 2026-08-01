@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://aie-decision.local/schemas/v1/derived-factor.schema.json", "title": "AIE Derived Factor Candidate v1", "type": "object",
+  "required": ["schema_version", "factor_id", "name", "status", "input_condition_ids", "composition", "unit", "time_window", "target_paths", "hypothesis", "falsification_conditions", "validation_status", "revision"],
+  "properties": {"schema_version": {"const": "1.0.0"}, "factor_id": {"type": "string"}, "name": {"type": "string"}, "status": {"const": "candidate"}, "input_condition_ids": {"type": "array", "minItems": 2}, "composition": {"type": "object"}, "unit": {"type": "string"}, "time_window": {"type": "string"}, "target_paths": {"type": "array", "minItems": 1}, "hypothesis": {"type": "string"}, "falsification_conditions": {"type": "array", "minItems": 1}, "validation_status": {"enum": ["unvalidated", "supported", "falsified", "inconclusive"]}, "revision": {"$ref": "common.schema.json#/$defs/revision"}},
+  "additionalProperties": true
+}

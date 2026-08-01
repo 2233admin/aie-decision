@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://aie-decision.local/schemas/v1/event-scene.schema.json", "title": "AIE Event Scene v1", "type": "object",
+  "required": ["schema_version", "scene_id", "question_id", "actors", "events", "relations", "known_unknowns", "provenance", "revision"],
+  "properties": {"schema_version": {"const": "1.0.0"}, "scene_id": {"type": "string"}, "question_id": {"type": "string"}, "actors": {"type": "array"}, "events": {"type": "array", "items": {"type": "object", "required": ["event_id", "status", "actor_ids", "action", "supporting_atom_ids"]}}, "relations": {"type": "array"}, "known_unknowns": {"type": "array"}, "provenance": {"type": "array", "minItems": 1}, "revision": {"$ref": "common.schema.json#/$defs/revision"}},
+  "additionalProperties": false
+}

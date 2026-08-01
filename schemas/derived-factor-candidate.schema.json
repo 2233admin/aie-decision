@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://aie-decision.local/schemas/v1/derived-factor-candidate.schema.json","title":"AIE Derived Factor Candidate v1","$ref":"derived-factor.schema.json"}

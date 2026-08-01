@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/v1/common.schema.json",
+  "title": "AIE Common Definitions v1",
+  "$defs": {
+    "revision": {
+      "type": "object",
+      "required": ["revision_id", "sequence", "created_at"],
+      "properties": {"revision_id": {"type": "string"}, "sequence": {"type": "integer", "minimum": 1}, "created_at": {"type": "string"}, "supersedes_revision_id": {"type": ["string", "null"]}}
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source_id", "locator"],
+      "properties": {"source_id": {"type": "string"}, "locator": {"type": "string"}, "observed_at": {"type": ["string", "null"]}, "transformation": {"type": ["string", "null"]}}
+    },
+    "answerability": {
+      "type": "object",
+      "required": ["status", "reasons", "blocking_condition_ids"],
+      "properties": {"status": {"enum": ["answerable_bounded", "not_answerable", "insufficient_evidence", "invalid_contract", "failed_validation"]}, "reasons": {"type": "array", "items": {"type": "string"}}, "blocking_condition_ids": {"type": "array", "items": {"type": "string"}}}
+    }
+  }
+}

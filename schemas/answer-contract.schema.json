@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/v1/answer-contract.schema.json",
+  "title": "AIE Answer Contract v1",
+  "type": "object",
+  "required": ["schema_version", "question_id", "question", "answer_type", "target", "observation_cutoff", "revision"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "question_id": {"type": "string", "pattern": "^[a-z][a-z0-9:_-]+$"},
+    "question": {"type": "string", "minLength": 1},
+    "answer_type": {"enum": ["current_observation", "historical_reconstruction", "future_prediction", "causal_explanation", "decision_comparison"]},
+    "target": {"type": "object", "required": ["entity", "measure", "unit"], "properties": {"entity": {"type": "string"}, "measure": {"type": "string"}, "unit": {"type": "string"}}},
+    "observation_cutoff": {"type": "string"},
+    "prediction_horizon": {"type": ["string", "null"]},
+    "requested_coverage": {"type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+    "uncertainty_semantics": {"enum": ["empirical_prediction_interval", "subjective_credible_interval", "measurement_error_bound", "scenario_bound", "unknown", null]},
+    "decision_thresholds": {"type": "array", "items": {"type": "number"}},
+    "revision": {"$ref": "common.schema.json#/$defs/revision"},
+    "provenance": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/provenance"}}
+  },
+  "additionalProperties": false
+}
