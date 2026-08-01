@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/v1/acceptance-oracle.schema.json",
+  "title": "Acceptance Review Oracle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_version",
+    "corpus",
+    "evidence_class",
+    "input_fixture",
+    "label_policy",
+    "proposition_review_labels",
+    "case_labels",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "fixture_version": {
+      "type": "string"
+    },
+    "corpus": {
+      "type": "string"
+    },
+    "evidence_class": {
+      "const": "controlled_mechanism_fixture"
+    },
+    "input_fixture": {
+      "type": "string"
+    },
+    "label_policy": {
+      "type": "object"
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "proposition_review_labels": {
+      "type": "array",
+      "minItems": 100,
+      "items": {
+        "type": "object",
+        "required": [
+          "label_id",
+          "case_id",
+          "expected_disposition",
+          "selector",
+          "expected",
+          "review",
+          "provenance"
+        ],
+        "properties": {
+          "label_id": {
+            "type": "string"
+          },
+          "case_id": {
+            "type": "string"
+          },
+          "expected_disposition": {
+            "enum": [
+              "proposition",
+              "ignored_source"
+            ]
+          },
+          "disposition_reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "selector": {
+            "type": "object",
+            "required": [
+              "source_id",
+              "source_locator"
+            ],
+            "properties": {
+              "source_id": {
+                "type": "string"
+              },
+              "source_locator": {
+                "type": "string"
+              }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "required": [
+              "epistemic_type",
+              "source_id",
+              "source_locator",
+              "speaker",
+              "event_fact_admitted"
+            ],
+            "properties": {
+              "claim_text_exact": {
+                "type": "string",
+                "minLength": 1
+              },
+              "claim_text_normalized": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target_relevant": {
+                "type": "boolean"
+              },
+              "epistemic_type": {
+                "enum": [
+                  "primary_record",
+                  "observed_event",
+                  "attributed_statement",
+                  "forecast",
+                  "causal_claim",
+                  "evaluation",
+                  "rhetoric",
+                  "omission"
+                ]
+              },
+              "source_id": {
+                "type": "string"
+              },
+              "source_locator": {
+                "type": "string"
+              },
+              "speaker": {
+                "type": "string"
+              },
+              "event_fact_admitted": {
+                "type": "boolean"
+              },
+              "policy_stage": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scene_fields": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actors",
+                  "action",
+                  "object",
+                  "time",
+                  "place",
+                  "sequence",
+                  "dispute_status",
+                  "omissions"
+                ],
+                "properties": {
+                  "actors": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  },
+                  "action": {"type": ["string", "null"]},
+                  "object": {"type": ["string", "null"]},
+                  "time": {"type": ["string", "null"]},
+                  "place": {"type": ["string", "null"]},
+                  "sequence": {"type": ["integer", "null"], "minimum": 1},
+                  "dispute_status": {
+                    "enum": ["undisputed", "disputed", "not_applicable"]
+                  },
+                  "omissions": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                }
+              }
+            }
+          },
+          "review": {
+            "type": "object",
+            "required": [
+              "review_method",
+              "reviewer_id",
+              "reviewed_at",
+              "guideline_version",
+              "evidence_class"
+            ],
+            "properties": {
+              "review_method": {
+                "type": "string",
+                "minLength": 1
+              },
+              "not_human_acceptance": {
+                "type": "boolean"
+              },
+              "evidence_class": {
+                "const": "controlled_mechanism_fixture"
+              }
+            }
+          },
+          "provenance": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "case_labels": {
+      "type": "array",
+      "minItems": 20,
+      "items": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "gap_labels",
+          "expected_answerability",
+          "provenance"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "gap_labels": {
+            "type": "array",
+            "minItems": 1
+          },
+          "expected_answerability": {
+            "enum": [
+              "invalid_contract",
+              "insufficient_evidence",
+              "not_answerable",
+              "answerable_bounded",
+              "answerable_point"
+            ]
+          },
+          "provenance": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

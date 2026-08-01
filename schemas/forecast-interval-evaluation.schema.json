@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://aie-decision.local/schemas/v1/forecast-interval-evaluation.schema.json","title":"AIE Forecast Interval Evaluation v1","$ref":"interval-audit.schema.json"}

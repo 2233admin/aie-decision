@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://aie-decision.local/schemas/v1/interval-audit.schema.json", "title": "AIE Forecast Interval Audit v1", "type": "object",
+  "required": ["schema_version", "evaluation_id", "question_id", "forecast", "reference_value", "normalized_width", "empirical_coverage", "baseline_interval", "information_gain", "status", "revision"],
+  "properties": {"schema_version": {"const": "1.0.0"}, "evaluation_id": {"type": "string"}, "question_id": {"type": "string"}, "forecast": {"type": "object", "required": ["p05", "p50", "p95", "unit"]}, "reference_value": {"type": "number"}, "normalized_width": {"type": "number", "minimum": 0}, "empirical_coverage": {"type": ["number", "null"]}, "baseline_interval": {"type": "object", "required": ["p05", "p95"]}, "information_gain": {"type": "number"}, "status": {"enum": ["calibrated_informative", "calibrated_uninformative", "miscalibrated_overconfident", "miscalibrated_underconfident", "uncalibrated_informative", "uncalibrated_uninformative", "invalid_target_or_horizon"]}, "revision": {"$ref": "common.schema.json#/$defs/revision"}},
+  "additionalProperties": true
+}

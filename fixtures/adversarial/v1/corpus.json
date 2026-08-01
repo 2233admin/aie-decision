@@ -1,0 +1,48 @@
+{
+  "fixture_version": "1.0.0",
+  "corpus": "aie-standalone-adversarial",
+  "cases": [
+    {
+      "case_id": "adversarial-attribution-loss",
+      "category": "attribution_loss",
+      "contract_kind": "evidence_proposition",
+      "expected_issue": "attribution_loss",
+      "document": {"schema_version": "1.0.0", "evidence_atom_id": "ea-attr", "source_id": "src-policy", "source_locator": "p:1", "claim": "Coverage will double", "epistemic_type": "attributed_statement", "independence_group": "origin-policy", "target_relevance": ["condition:coverage"], "extraction_confidence": 0.9, "truth_confidence": 0.5, "provenance": [{"source_id": "src-policy", "locator": "p:1"}], "revision": {"revision_id": "rev-ea-attr-1", "sequence": 1, "created_at": "2026-08-01T00:00:00Z"}}
+    },
+    {
+      "case_id": "adversarial-rhetorical-leakage",
+      "category": "rhetorical_leakage",
+      "contract_kind": "evidence_proposition",
+      "expected_issue": "rhetorical_leakage",
+      "document": {"schema_version": "1.0.0", "evidence_atom_id": "ea-rhetoric", "source_id": "src-column", "source_locator": "p:2", "claim": "This is an economic earthquake", "epistemic_type": "rhetoric", "admitted_as_fact": true, "independence_group": "origin-column", "target_relevance": ["condition:demand"], "extraction_confidence": 0.98, "truth_confidence": 0.1, "provenance": [{"source_id": "src-column", "locator": "p:2"}], "revision": {"revision_id": "rev-ea-rhetoric-1", "sequence": 1, "created_at": "2026-08-01T00:00:00Z"}}
+    },
+    {
+      "case_id": "adversarial-hidden-point-imputation",
+      "category": "hidden_point_imputation",
+      "contract_kind": "missing_condition",
+      "expected_issue": "hidden_point_imputation",
+      "document": {"schema_version": "1.0.0", "estimate_id": "ce-demand", "condition_id": "c-demand", "estimate_type": "bounded_interval", "lower": 500, "upper": 500, "unit": "unit", "coverage_semantics": "subjective_credible_interval", "coverage": 0.9, "method": "guess", "input_atom_ids": [], "assumptions": [], "bound_provenance": [{"source_id": "src-user", "locator": "prompt"}], "dependence_case": "unknown", "revision": {"revision_id": "rev-ce-demand-1", "sequence": 1, "created_at": "2026-08-01T00:00:00Z"}}
+    },
+    {
+      "case_id": "adversarial-unsupported-causal-claim",
+      "category": "unsupported_causal_claim",
+      "contract_kind": "evidence_proposition",
+      "expected_issue": "unsupported_causal_claim",
+      "document": {"schema_version": "1.0.0", "evidence_atom_id": "ea-causal", "source_id": "src-opinion", "source_locator": "p:8", "speaker": "columnist", "claim": "The policy caused the decline", "epistemic_type": "causal_claim", "independence_group": "origin-opinion", "target_relevance": ["condition:demand"], "extraction_confidence": 0.95, "truth_confidence": 0.2, "provenance": [{"source_id": "src-opinion", "locator": "p:8"}], "revision": {"revision_id": "rev-ea-causal-1", "sequence": 1, "created_at": "2026-08-01T00:00:00Z"}}
+    },
+    {
+      "case_id": "adversarial-dependence-error",
+      "category": "dependence_error",
+      "contract_kind": "missing_condition",
+      "expected_issue": "dependence_error",
+      "document": {"schema_version": "1.0.0", "estimate_id": "ce-supply", "condition_id": "c-supply", "estimate_type": "bounded_interval", "lower": 400, "upper": 700, "unit": "unit", "coverage_semantics": "scenario_bound", "coverage": 0.9, "method": "bounds", "input_atom_ids": ["ea-1", "ea-2"], "assumptions": [], "bound_provenance": [{"source_id": "src-a", "locator": "p:1"}], "dependence_case": "silently_independent", "revision": {"revision_id": "rev-ce-supply-1", "sequence": 1, "created_at": "2026-08-01T00:00:00Z"}}
+    },
+    {
+      "case_id": "adversarial-vacuous-wide-interval",
+      "category": "vacuous_wide_interval",
+      "contract_kind": "interval_audit",
+      "expected_issue": "vacuous_wide_interval",
+      "document": {"schema_version": "1.0.0", "evaluation_id": "fie-wide", "question_id": "q-price", "forecast": {"p05": 0, "p50": 500, "p95": 1000, "unit": "CNY/unit"}, "reference_value": 500, "normalized_width": 2.0, "empirical_coverage": null, "baseline_interval": {"p05": 480, "p95": 520}, "information_gain": -24, "status": "uncalibrated_informative", "revision": {"revision_id": "rev-fie-wide-1", "sequence": 1, "created_at": "2026-08-01T00:00:00Z"}}
+    }
+  ]
+}

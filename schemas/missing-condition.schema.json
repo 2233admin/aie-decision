@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://aie-decision.local/schemas/v1/missing-condition.schema.json", "title": "AIE Missing Condition v1", "type": "object",
+  "required": ["schema_version", "estimate_id", "condition_id", "estimate_type", "lower", "upper", "unit", "coverage_semantics", "coverage", "method", "input_atom_ids", "assumptions", "bound_provenance", "dependence_case", "revision"],
+  "properties": {"schema_version": {"const": "1.0.0"}, "estimate_id": {"type": "string"}, "condition_id": {"type": "string"}, "estimate_type": {"const": "bounded_interval"}, "lower": {"type": "number"}, "upper": {"type": "number"}, "unit": {"type": "string"}, "coverage_semantics": {"enum": ["empirical_prediction_interval", "subjective_credible_interval", "measurement_error_bound", "scenario_bound", "unknown"]}, "coverage": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}, "method": {"type": "string"}, "input_atom_ids": {"type": "array"}, "assumptions": {"type": "array"}, "bound_provenance": {"type": "array", "minItems": 1}, "dependence_case": {"enum": ["independent", "dependent", "conditionally_dependent", "unknown"]}, "revision": {"$ref": "common.schema.json#/$defs/revision"}},
+  "additionalProperties": true
+}

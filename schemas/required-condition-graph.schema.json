@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/v1/required-condition-graph.schema.json",
+  "title": "AIE Required Condition Graph v1",
+  "type": "object",
+  "required": ["schema_version", "graph_id", "question_id", "answer_contract_revision_id", "conditions", "edges", "revision"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "graph_id": {"type": "string"}, "question_id": {"type": "string"}, "answer_contract_revision_id": {"type": "string"},
+    "conditions": {"type": "array", "items": {"type": "object", "required": ["condition_id", "name", "value_type", "necessity", "status", "answer_impact", "provenance", "revision"], "properties": {"condition_id": {"type": "string"}, "name": {"type": "string"}, "value_type": {"type": "string"}, "necessity": {"enum": ["required", "optional", "competing", "exploratory"]}, "status": {"enum": ["observed", "derived", "estimated", "missing", "not_applicable", "contradicted", "invalidated"]}, "answer_impact": {"type": "string"}, "unit": {"type": ["string", "null"]}, "provenance": {"type": "array", "minItems": 1}, "revision": {"$ref": "common.schema.json#/$defs/revision"}}}},
+    "edges": {"type": "array", "items": {"type": "object", "required": ["edge_id", "from_id", "to_id", "relation", "evidence_status", "answer_impact", "provenance", "revision"]}},
+    "minimal_sufficient_sets": {"type": "array", "items": {"type": "array", "minItems": 1, "items": {"type": "string"}}},
+    "revision": {"$ref": "common.schema.json#/$defs/revision"}, "provenance": {"type": "array"}
+  },
+  "additionalProperties": false
+}

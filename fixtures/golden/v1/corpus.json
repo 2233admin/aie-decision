@@ -1,0 +1,43 @@
+{
+  "fixture_version": "1.0.0",
+  "corpus": "aie-standalone-golden",
+  "cases": [
+    {
+      "case_id": "golden-policy-text",
+      "category": "policy_text",
+      "source": {"title": "Policy notice", "text": "The department states that applications open on 1 September and expects one million households to apply."},
+      "expected": {"propositions": [{"epistemic_type": "primary_record", "claim_contains": "applications open"}, {"epistemic_type": "forecast", "claim_contains": "expects"}], "preserve_speaker": true}
+    },
+    {
+      "case_id": "golden-event-report",
+      "category": "event_report",
+      "source": {"title": "Port closure report", "text": "Port records show Gate 3 closed at 08:10. The operator reopened it at 09:05."},
+      "expected": {"scene_status": "confirmed", "event_count": 2, "chronology_preserved": true}
+    },
+    {
+      "case_id": "golden-mixed-fact-opinion",
+      "category": "mixed_fact_opinion_article",
+      "source": {"title": "Council analysis", "text": "The council voted 7-2 on Tuesday. The author calls the vote a cynical manoeuvre."},
+      "expected": {"epistemic_types": ["observed_event", "evaluation"], "fact_judgment_separated": true}
+    },
+    {
+      "case_id": "golden-contradictory-sources",
+      "category": "contradictory_sources",
+      "sources": [{"source_id": "src-a", "text": "The outage began at 14:00."}, {"source_id": "src-b", "text": "The outage began at 14:35."}],
+      "expected": {"scene_status": "contested", "counter_evidence_preserved": true, "time_window": "14:00/14:35"}
+    },
+    {
+      "case_id": "golden-future-price",
+      "category": "future_price_question",
+      "question": "What will tomorrow's price be?",
+      "expected": {"answer_type": "future_prediction", "answerability": "invalid_contract", "blockers": ["target.entity", "target.unit", "prediction_horizon", "observation_cutoff", "uncertainty_semantics"]}
+    },
+    {
+      "case_id": "golden-sparse-evidence",
+      "category": "sparse_evidence",
+      "question": "Will local supply meet demand next week?",
+      "source": {"text": "One distributor reported delayed trucks."},
+      "expected": {"answerability": "insufficient_evidence", "package_state": "partial", "missing_conditions_visible": true}
+    }
+  ]
+}
