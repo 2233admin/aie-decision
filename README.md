@@ -4,6 +4,30 @@ AIE Decision 是一个答案导向的逆向测量与证据编译器。它从“�
 
 它不是文章摘要器，也不会把缺失信息偷偷补成确定答案。
 
+## 第一版：最小费米估算
+
+第一版最短路径只做一件事：给出一条费米公式和各变量所在的联合 90% 情景区间，程序保留公式真正引用的最小变量集合，传播出目标区间，计算宽度，并指出最值得继续测量的变量。
+
+```powershell
+uv run aie-decision fermi fixtures/fermi/v1/daily-revenue.json
+```
+
+示例公式：
+
+```text
+daily_revenue = visitors * conversion_rate * average_order_value
+```
+
+输出直接包含：
+
+- `minimal_variables`：公式真正需要的变量；
+- `target_interval`：目标的声明 90% 主观可信区间；
+- `absolute_width` 和 `normalized_width`：区间有多宽；
+- `largest_uncertainty_source`：哪个变量造成的宽度最大；
+- `next_measurement`：下一项最值得缩窄的变量。
+
+第一版不获取外部数据，也不把单次主观区间冒充成已经完成历史校准的预测区间。
+
 ## 核心流程
 
 ```text
@@ -55,6 +79,7 @@ uv run aie-decision compile input.json --output-dir output
 其他命令：
 
 ```powershell
+uv run aie-decision fermi fixtures/fermi/v1/daily-revenue.json
 uv run aie-decision validate analysis-package.json
 uv run aie-decision render-report analysis-package.json --output report.md
 uv run aie-decision audit-interval --help

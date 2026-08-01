@@ -1,0 +1,40 @@
+{
+  "question": "一家门店明天的营业收入有多大？",
+  "target": "daily_revenue",
+  "unit": "CNY/day",
+  "formula": "visitors * conversion_rate * average_order_value",
+  "coverage": 0.9,
+  "reference_value": 10000,
+  "acceptable_width": 5000,
+  "thresholds": [10000],
+  "variables": [
+    {
+      "name": "visitors",
+      "lower": 600,
+      "upper": 1400,
+      "unit": "people/day",
+      "method": "user supplied 90% range"
+    },
+    {
+      "name": "conversion_rate",
+      "lower": 0.09,
+      "upper": 0.11,
+      "unit": "ratio",
+      "method": "user supplied 90% range"
+    },
+    {
+      "name": "average_order_value",
+      "lower": 95,
+      "upper": 105,
+      "unit": "CNY/order",
+      "method": "user supplied 90% range"
+    },
+    {
+      "name": "weather_commentary",
+      "lower": 0,
+      "upper": 1,
+      "unit": "flag",
+      "method": "irrelevant context supplied to prove pruning"
+    }
+  ]
+}

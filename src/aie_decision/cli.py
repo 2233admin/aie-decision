@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .exporting import human_report, package_json, to_primitive, write_human_report, write_package_json
+from .fermi import estimate_fermi
 from .intervals import ForecastInterval, IntervalKind, audit_interval
 from .pipeline import compile_analysis
 from .validation import ContractValidationError, load_and_validate
@@ -21,6 +22,12 @@ def _parser() -> argparse.ArgumentParser:
     compile_command = commands.add_parser("compile", help="Compile a supplied question and materials into an analysis package")
     compile_command.add_argument("path", type=Path, help="JSON input; no external acquisition is performed")
     compile_command.add_argument("--output-dir", type=Path, required=True)
+
+    fermi = commands.add_parser(
+        "fermi",
+        help="Propagate supplied 90%% variable ranges through a minimal Fermi formula",
+    )
+    fermi.add_argument("path", type=Path, help="JSON question, formula, and variable ranges")
 
     validate = commands.add_parser("validate", help="Validate a versioned AIE JSON object")
     validate.add_argument("path", type=Path)
@@ -66,6 +73,13 @@ def _compile(args: argparse.Namespace) -> int:
     }
     print(package_json(response), end="")
     return 0 if not result.validation_issues else 2
+
+
+def _fermi(args: argparse.Namespace) -> int:
+    payload = json.loads(args.path.read_text(encoding="utf-8"))
+    result = estimate_fermi(payload)
+    print(package_json(result), end="")
+    return 0
 
 
 def _validate(args: argparse.Namespace) -> int:
@@ -142,6 +156,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "compile":
             return _compile(args)
+        if args.command == "fermi":
+            return _fermi(args)
         if args.command == "validate":
             return _validate(args)
         if args.command == "render-report":

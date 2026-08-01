@@ -1,6 +1,6 @@
 ---
 name: aie-decision
-description: "Compile user-supplied questions and evidence into traceable standalone AIE decision-analysis packages, including answer contracts, necessary-condition graphs, evidence propositions, reconstructed scenes, bounded missing conditions, derived-factor candidates, and forecast-interval audits. Use for decision analysis, answer-oriented reverse measurement, evidence compilation, AIE JSON validation or report rendering, forecast-interval auditing, or an explicit $aie-decision invocation. Process only supplied materials and do not acquire external data."
+description: "Run minimal Fermi estimates or compile user-supplied questions and evidence into traceable standalone AIE decision-analysis packages, including minimal formula variables, 90 percent interval propagation and width, answer contracts, condition graphs, bounded missing conditions, and forecast-interval audits. Use for Fermi decomposition, decision analysis, answer-oriented reverse measurement, AIE JSON validation or report rendering, forecast-interval auditing, or an explicit $aie-decision invocation. Process only supplied materials and do not acquire external data."
 ---
 
 # AIE Decision
@@ -19,10 +19,13 @@ Use the standalone `aie-decision` runtime as the product authority. Do not repla
 
 Choose the narrowest real command:
 
+- Run the minimal first version: `uv run --project <repo-root> aie-decision fermi <input.json>`
 - Compile an analysis: `uv run --project <repo-root> aie-decision compile <input.json> --output-dir <output-dir>`
 - Validate an AIE object: `uv run --project <repo-root> aie-decision validate <path> [--kind <kind>]`
 - Render an already validated package: `uv run --project <repo-root> aie-decision render-report <path> [--output <report.md>]`
 - Audit one declared interval: `uv run --project <repo-root> aie-decision audit-interval --target <target> --horizon <horizon> --unit <unit> --population <population> --coverage <coverage> --lower <lower> --upper <upper> --reference <reference> --reference-time <time> --method <method> [--baseline-lower <lower> --baseline-upper <upper>] [--threshold <value> ...]`
+
+For a `fermi` run, construct only a user-supported arithmetic formula and bounded variables. The formula is a candidate Fermi decomposition, not an observed fact. Report the referenced minimal variables, propagated interval, absolute and normalized width, largest uncertainty source, and next measurement. Preserve `calibration: unmeasured` unless separate historical evidence establishes calibration.
 
 For compilation, inspect the JSON response and retain its declared paths. A successful run writes `analysis-package.json`, `decision-report.md`, and `analysis-ledger.json`.
 

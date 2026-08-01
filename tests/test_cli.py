@@ -34,3 +34,29 @@ def test_validate_cli_returns_safe_error_for_bad_json(tmp_path, capsys):
     error = json.loads(capsys.readouterr().err)
     assert error["error"] == "JSONDecodeError"
     assert "Traceback" not in error["message"]
+
+
+def test_fermi_cli_returns_minimal_variables_and_width(tmp_path, capsys):
+    path = tmp_path / "fermi.json"
+    path.write_text(
+        json.dumps(
+            {
+                "question": "Daily sales?",
+                "target": "sales",
+                "unit": "orders/day",
+                "formula": "visitors * conversion_rate",
+                "reference_value": 100,
+                "variables": [
+                    {"name": "visitors", "lower": 800, "upper": 1200},
+                    {"name": "conversion_rate", "lower": 0.08, "upper": 0.12},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["fermi", str(path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["minimal_variable_count"] == 2
+    assert result["target_interval"] == {"lower": 64.0, "upper": 144.0}
+    assert result["absolute_width"] == 80.0
