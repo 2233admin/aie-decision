@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aie-decision"
-version = "0.1.0"
-description = "Standalone answer-oriented evidence compiler contracts"
+version = "0.2.0"
+description = "Auditable question-to-interval operational throughput estimator"
 requires-python = ">=3.12"
 
 [project.scripts]

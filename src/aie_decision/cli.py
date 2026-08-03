@@ -29,6 +29,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     fermi.add_argument("path", type=Path, help="JSON question, formula, and variable ranges")
 
+    estimate = commands.add_parser(
+        "estimate",
+        help="Estimate operational throughput from a question and attributed materials",
+    )
+    estimate.add_argument("path", type=Path, help="JSON containing only question, materials, and optional run controls")
+
     validate = commands.add_parser("validate", help="Validate a versioned AIE JSON object")
     validate.add_argument("path", type=Path)
     validate.add_argument("--kind", help="Schema kind when it cannot be inferred")
@@ -80,6 +86,16 @@ def _fermi(args: argparse.Namespace) -> int:
     result = estimate_fermi(payload)
     print(package_json(result), end="")
     return 0
+
+
+def _estimate(args: argparse.Namespace) -> int:
+    # Keep optional product slices out of the base compiler dependency graph.
+    # Import occurs only when this command is selected.
+    module = __import__("aie_decision.throughput", fromlist=["estimate_throughput"])
+    payload = json.loads(args.path.read_text(encoding="utf-8"))
+    result = module.estimate_throughput(payload)
+    print(package_json(result), end="")
+    return 0 if result["status"] == "complete" else 2
 
 
 def _validate(args: argparse.Namespace) -> int:
@@ -158,6 +174,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _compile(args)
         if args.command == "fermi":
             return _fermi(args)
+        if args.command == "estimate":
+            return _estimate(args)
         if args.command == "validate":
             return _validate(args)
         if args.command == "render-report":
