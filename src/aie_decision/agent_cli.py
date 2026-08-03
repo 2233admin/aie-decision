@@ -254,7 +254,7 @@ def _output(result: Mapping[str, Any], output: str | None) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m aie_decision.agent_cli",
+        prog="aie-decision",
         description="Versioned JSON CLI for the agent decomposition runtime",
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -387,13 +387,22 @@ def _do_apply(args: argparse.Namespace) -> int:
             args.output if not args.pretty else "-",
         )
         return 2
-    # When ``--action`` is supplied explicitly, the input file holds the
-    # payload directly.  When it is absent, the input must wrap the
-    # payload under a ``payload`` key (alongside ``action``).
-    if args.action and "payload" not in extra:
-        payload = dict(extra)
+    # Accept both protocol envelopes and the natural flat CLI form:
+    # {"action": "expand", "payload": {...}} or
+    # {"action": "expand", ...payload fields...}.  ``--action`` may also
+    # supply the name while the input file contains either payload shape.
+    if isinstance(extra.get("payload"), Mapping):
+        payload = dict(extra["payload"])
     else:
-        payload = dict(extra.get("payload") or {})
+        control_fields = {
+            "action",
+            "prior_revision",
+            "rollback_target_sequence",
+            "compute_cost",
+        }
+        payload = {
+            key: value for key, value in extra.items() if key not in control_fields
+        }
     prior_revision = extra.get("prior_revision")
     rollback_target = extra.get("rollback_target_sequence")
     compute_cost = extra.get("compute_cost")

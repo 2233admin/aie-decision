@@ -476,9 +476,9 @@ def test_familiar_domain_keywords_do_not_auto_complete_the_decomposition():
     # The question deliberately uses operational vocabulary.  The runtime
     # must not synthesise a fixed formula or default children.
     question = Question(
-        question_id="q-throughput",
-        question="Estimate the daily operational throughput of a fulfillment centre.",
-        target_subject="fulfillment-centre daily throughput",
+        question_id="q-production-volume",
+        question="Estimate the daily production volume of a fabrication workshop.",
+        target_subject="fabrication-workshop daily production volume",
         target_measure="orders per day",
         unit="order/day",
         time_basis="per weekday",
