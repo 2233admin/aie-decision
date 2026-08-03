@@ -952,3 +952,195 @@ def test_certify_valid_joint_model_produces_deterministic_certified_output() -> 
     )
     assert certification.status is FrontierStatus.CERTIFIED
     assert certification.certified is True
+
+
+# ---------------------------------------------------------------------------
+# Intervention-result formatting survives invalid probability intervals
+# ---------------------------------------------------------------------------
+
+
+def test_necessity_handles_invalid_baseline_without_formatting_crash() -> None:
+    """When the post-intervention summary has ``width is None`` (because
+    an unknown marginal remained after deletion), the intervention note
+    must not crash on numeric formatting and must report the invalid
+    interval honestly."""
+
+    leaves = [
+        _unknown_leaf("a", domain=(0.5, 1.5)),
+        _unknown_leaf("b", domain=(2.0, 3.0)),
+    ]
+    # Expression only references ``a``; deleting ``b`` keeps the expression
+    # computable but leaves an unknown marginal in scope, so width is None.
+    expression = compile_expression("a")
+    model = JointModel(sample_count=64, seed=70)
+    invalid_summary = joint_sample(leaves, expression, model)
+    assert invalid_summary.probability_interval_valid is False
+    assert invalid_summary.width is None
+
+    def _delete(leaf_id: str) -> Optional[Sequence[LeafSpec]]:
+        return [leaf for leaf in leaves if leaf.leaf_id != leaf_id]
+
+    evidence = evaluate_necessity(
+        leaf=leaves[1],
+        other_leaves=[leaves[0]],
+        expression=expression,
+        model=model,
+        baseline=invalid_summary,
+        material_degradation=0.1,
+        delete=_delete,
+    )
+    assert evidence.deletion.applicable is True
+    assert evidence.deletion.new_status == "invalid_interval"
+    # No formatting crash; the intervention note records an invalid width.
+    assert any("width_after=invalid" in note for note in evidence.deletion.notes)
+    # When the new interval is invalid we surface a target_width_unavailable
+    # reason rather than masking the comparison with a fabricated number.
+    assert any("target_width_unavailable" in reason for reason in evidence.reasons)
+
+
+def test_necessity_coarsening_with_invalid_baseline_does_not_crash() -> None:
+    leaves = [
+        _unknown_leaf("a", domain=(0.5, 1.5)),
+        _constant_leaf("scale", 2.0),
+    ]
+    expression = compile_expression("a")
+    model = JointModel(sample_count=64, seed=71)
+    invalid_summary = joint_sample(leaves, expression, model)
+    assert invalid_summary.width is None
+
+    def _delete(leaf_id: str) -> Optional[Sequence[LeafSpec]]:
+        return [leaf for leaf in leaves if leaf.leaf_id != leaf_id]
+
+    def _coarsen(leaf_id: str) -> Optional[LeafSpec]:
+        # Coarsening the unknown leaf into a wider unknown domain still
+        # leaves the post-coarsening summary invalid.
+        if leaf_id == "a":
+            return _unknown_leaf("a", domain=(0.0, 2.0))
+        return None
+
+    evidence = evaluate_necessity(
+        leaf=leaves[0],
+        other_leaves=[leaves[1]],
+        expression=expression,
+        model=model,
+        baseline=invalid_summary,
+        material_degradation=0.1,
+        delete=_delete,
+        coarsen=_coarsen,
+    )
+    assert evidence.coarsening is not None
+    assert evidence.coarsening.applicable is True
+    assert evidence.coarsening.new_status == "invalid_interval"
+    assert any("width_after=invalid" in note for note in evidence.coarsening.notes)
+
+
+# ---------------------------------------------------------------------------
+# Saturation: replacement failures and invalid widths are recorded honestly
+# ---------------------------------------------------------------------------
+
+
+def test_saturation_catches_replacement_failure_without_crashing() -> None:
+    leaves = [_constant_leaf("anchor", 1.0), _fitted_leaf("b", 1.0, 2.0, 3.0)]
+    expression = compile_expression("anchor * b")
+    model = JointModel(sample_count=64, seed=80)
+    summary = joint_sample(leaves, expression, model)
+
+    colliding_leaf = LeafSpec(leaf_id="anchor", marginal=ConstantMarginal(value=0.5))
+
+    def _refine(
+        current: Sequence[LeafSpec], baseline: TargetSummary
+    ) -> Optional[RefinementProposal]:
+        # Returning a proposed_leaves that re-introduces an existing
+        # leaf id forces ``_replace_leaf`` to raise, exercising the new
+        # ``refinement_replacement_failed`` branch.
+        return RefinementProposal(
+            leaf_id="b",
+            proposed_leaves=[colliding_leaf],
+            description="deliberately_collides_with_anchor",
+            expected_target_narrowing=10.0,
+        )
+
+    saturation = evaluate_saturation(
+        leaves,
+        expression,
+        model,
+        summary,
+        material_improvement_threshold=0.5,
+        next_refinement=_refine,
+    )
+    assert saturation.explored == ()
+    assert any("refinement_replacement_failed" in note for note in saturation.notes)
+
+
+def test_saturation_skips_invalid_baseline_without_narrowing_claim() -> None:
+    """Saturation must not manufacture a narrowing when the baseline
+    summary has no valid probability interval."""
+
+    leaves = [_unknown_leaf("a", domain=(0.5, 1.5)), _constant_leaf("scale", 2.0)]
+    expression = compile_expression("a * scale")
+    model = JointModel(sample_count=64, seed=81)
+    invalid_summary = joint_sample(leaves, expression, model)
+    assert invalid_summary.width is None
+    assert not invalid_summary.probability_interval_valid
+
+    def _refine(
+        current: Sequence[LeafSpec], baseline: TargetSummary
+    ) -> Optional[RefinementProposal]:
+        return RefinementProposal(
+            leaf_id="a",
+            proposed_leaves=[_fitted_leaf("a", 0.9, 1.0, 1.1)],
+            description="narrow_unknown",
+            expected_target_narrowing=0.5,
+        )
+
+    saturation = evaluate_saturation(
+        leaves,
+        expression,
+        model,
+        invalid_summary,
+        material_improvement_threshold=0.01,
+        next_refinement=_refine,
+    )
+    # The narrowing was not produced — the explored result reports zero
+    # narrowing and we never cross the material-improvement threshold.
+    assert any("baseline_invalid_skipping_narrowing_comparison" in note for note in saturation.notes)
+    assert all(r.observed_narrowing == 0.0 for r in saturation.explored)
+    assert saturation.saturated is False
+
+
+def test_saturation_skips_invalid_new_summary_without_narrowing_claim() -> None:
+    """When the refined frontier yields an invalid summary, the result
+    must still be recorded as explored but the observed narrowing must
+    be zero."""
+
+    leaves = [_unknown_leaf("a", domain=(0.5, 1.5)), _constant_leaf("scale", 2.0)]
+    expression = compile_expression("a * scale")
+    # A different (valid) baseline lets us test the path where the
+    # baseline is valid but the post-refinement summary is invalid.
+    valid_leaves = [_fitted_leaf("a", 0.9, 1.0, 1.1), _constant_leaf("scale", 2.0)]
+    valid_baseline = joint_sample(valid_leaves, expression, JointModel(sample_count=64, seed=82))
+    assert valid_baseline.probability_interval_valid is True
+
+    def _refine(
+        current: Sequence[LeafSpec], baseline: TargetSummary
+    ) -> Optional[RefinementProposal]:
+        # Swap a fitted leaf for an unknown one — the new summary is
+        # invalid but the call to joint_sample still succeeds.
+        return RefinementProposal(
+            leaf_id="a",
+            proposed_leaves=[_unknown_leaf("a", domain=(0.5, 1.5))],
+            description="worsen_to_unknown",
+            expected_target_narrowing=0.5,
+        )
+
+    saturation = evaluate_saturation(
+        valid_leaves,
+        expression,
+        JointModel(sample_count=64, seed=82),
+        valid_baseline,
+        material_improvement_threshold=0.01,
+        next_refinement=_refine,
+    )
+    assert any("refinement_invalid_interval" in note for note in saturation.notes)
+    assert all(r.observed_narrowing == 0.0 for r in saturation.explored)
+    assert all(r.over_material_threshold is False for r in saturation.explored)

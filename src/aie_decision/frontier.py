@@ -336,11 +336,15 @@ def evaluate_necessity(
         if deletion_result.new_status == "non_computable":
             reasons.append("deletion_makes_branch_non_computable")
         else:
-            assert deletion_result.target_width is not None
-            degradation = (
-                deletion_result.target_width - baseline.width
-            ) / baseline.width if baseline.width else 0.0
-            if degradation > material_degradation:
+            degradation = _degradation_or_invalid(
+                baseline.width, deletion_result.target_width
+            )
+            if degradation is None:
+                reasons.append("deletion_target_width_unavailable")
+                # An undeleted branch that cannot produce a finite interval
+                # is destructive enough to record as necessary — without
+                # it we cannot certify a probability interval.
+            elif degradation > material_degradation:
                 reasons.append(
                     f"deletion_degrades_width_by_{degradation:.3f}_over_threshold"
                 )
@@ -354,11 +358,12 @@ def evaluate_necessity(
         elif coarsening_result.new_status == "non_computable":
             reasons.append("coarsening_makes_branch_non_computable")
         else:
-            assert coarsening_result.target_width is not None
-            degradation = (
-                coarsening_result.target_width - baseline.width
-            ) / baseline.width if baseline.width else 0.0
-            if degradation > material_degradation:
+            degradation = _degradation_or_invalid(
+                baseline.width, coarsening_result.target_width
+            )
+            if degradation is None:
+                reasons.append("coarsening_target_width_unavailable")
+            elif degradation > material_degradation:
                 reasons.append(
                     f"coarsening_degrades_width_by_{degradation:.3f}_over_threshold"
                 )
@@ -372,11 +377,12 @@ def evaluate_necessity(
         elif substitution_result.new_status == "non_computable":
             reasons.append("substitution_makes_branch_non_computable")
         else:
-            assert substitution_result.target_width is not None
-            degradation = (
-                substitution_result.target_width - baseline.width
-            ) / baseline.width if baseline.width else 0.0
-            if degradation > material_degradation:
+            degradation = _degradation_or_invalid(
+                baseline.width, substitution_result.target_width
+            )
+            if degradation is None:
+                reasons.append("substitution_target_width_unavailable")
+            elif degradation > material_degradation:
                 reasons.append(
                     f"substitution_degrades_width_by_{degradation:.3f}_over_threshold"
                 )
@@ -391,9 +397,39 @@ def evaluate_necessity(
         coarsening=coarsening_result,
         substitution=substitution_result,
         material_threshold=material_degradation,
-        baseline_width=baseline.width,
+        baseline_width=baseline.width if baseline.width is not None else 0.0,
         reasons=tuple(reasons),
     )
+
+
+def _degradation_or_invalid(
+    baseline_width: Optional[float], new_width: Optional[float]
+) -> Optional[float]:
+    """Compute the fractional width degradation, treating ``None`` as invalid.
+
+    Returns ``None`` when either side is unavailable (the baseline or
+    the post-intervention summary did not yield a valid probability
+    interval).  Callers must interpret a ``None`` return value as
+    "the intervention produced an interval we cannot evaluate" and
+    record an honest reason rather than coercing a numeric comparison.
+    """
+
+    if baseline_width is None or new_width is None:
+        return None
+    if baseline_width == 0:
+        # A zero-width baseline cannot express a fractional degradation
+        # meaningfully; treat any positive post-intervention width as a
+        # material regression and a zero-width new result as no change.
+        return float("inf") if new_width > 0 else 0.0
+    return (new_width - baseline_width) / baseline_width
+
+
+def _format_width_note(value: Optional[float]) -> str:
+    """Format an intervention-result width for a note, surviving ``None``."""
+
+    if value is None:
+        return "width_after=invalid"
+    return f"width_after={value:.6g}"
 
 
 def _execute_deletion(
@@ -437,8 +473,8 @@ def _execute_deletion(
         intervention="deletion",
         applicable=True,
         target_width=summary.width,
-        new_status="computed",
-        notes=(f"width_after_deletion={summary.width:.6g}",),
+        new_status="computed" if summary.probability_interval_valid else "invalid_interval",
+        notes=(_format_width_note(summary.width),),
     )
 
 
@@ -477,8 +513,8 @@ def _execute_coarsening(
         intervention="coarsening",
         applicable=True,
         target_width=summary.width,
-        new_status="computed",
-        notes=(f"width_after_coarsening={summary.width:.6g}",),
+        new_status="computed" if summary.probability_interval_valid else "invalid_interval",
+        notes=(_format_width_note(summary.width),),
     )
 
 
@@ -517,8 +553,8 @@ def _execute_substitution(
         intervention="substitution",
         applicable=True,
         target_width=summary.width,
-        new_status="computed",
-        notes=(f"width_after_substitution={summary.width:.6g}",),
+        new_status="computed" if summary.probability_interval_valid else "invalid_interval",
+        notes=(_format_width_note(summary.width),),
     )
 
 
@@ -603,6 +639,11 @@ def evaluate_saturation(
     notes: list[str] = []
     cursor: tuple[LeafSpec, ...] = tuple(current_leaves)
     exhausted = False
+    # An invalid baseline cannot yield a meaningful narrowing; record
+    # this once so the certification report is honest about what was
+    # actually measured.
+    if baseline.width is None or not baseline.probability_interval_valid:
+        notes.append("baseline_invalid_skipping_narrowing_comparison")
 
     for iteration in range(max_iterations):
         try:
@@ -623,7 +664,13 @@ def evaluate_saturation(
             )
             continue
 
-        replaced = _replace_leaf(cursor, proposal.leaf_id, proposal.proposed_leaves)
+        try:
+            replaced = _replace_leaf(cursor, proposal.leaf_id, proposal.proposed_leaves)
+        except Exception as exc:
+            notes.append(
+                f"refinement_replacement_failed:{proposal.leaf_id}:{exc!r}"
+            )
+            continue
         try:
             new_summary = joint_sample(replaced, expression, model)
         except Exception as exc:
@@ -631,6 +678,32 @@ def evaluate_saturation(
                 f"refinement_evaluation_failed:{proposal.leaf_id}:{exc!r}"
             )
             continue
+
+        # Skip refinements whose new summary is invalid: a width of None
+        # or an invalid probability interval cannot honestly be compared
+        # to the baseline, so we refuse to manufacture a narrowing value.
+        if (
+            new_summary.width is None
+            or not new_summary.probability_interval_valid
+            or baseline.width is None
+            or not baseline.probability_interval_valid
+        ):
+            notes.append(
+                f"refinement_invalid_interval:{proposal.leaf_id}"
+            )
+            explored.append(
+                RefinementResult(
+                    leaf_id=proposal.leaf_id,
+                    description=proposal.description,
+                    expected_narrowing=0.0
+                    if proposal.expected_target_narrowing is None
+                    else max(0.0, float(proposal.expected_target_narrowing)),
+                    observed_narrowing=0.0,
+                    over_material_threshold=False,
+                )
+            )
+            continue
+
         observed = max(0.0, baseline.width - new_summary.width)
         best_observed = max(best_observed, observed)
         expected = proposal.expected_target_narrowing

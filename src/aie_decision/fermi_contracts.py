@@ -434,11 +434,30 @@ def _dimension_key(unit: CompoundUnit) -> str:
 
 
 def _collect_expression_variables(tree: ast.AST) -> list[str]:
+    """Collect variable names in the order they first appear in the source.
+
+    ``ast.walk`` traverses the tree in breadth-first order, which diverges
+    from the textual source order whenever a node holds a sub-expression
+    that appears before its sibling at the same depth (e.g. ``b * a``
+    would otherwise collect ``b`` first and silently rebind the dimension
+    of ``a`` to the unit of ``b``).  Walking the tree with a depth-first
+    visitor preserves the textual order in which the variables appear,
+    so unit bindings line up with the source.
+    """
+
     seen: list[str] = []
-    for node in ast.walk(tree):
+    for node in _depth_first(tree):
         if isinstance(node, ast.Name) and node.id not in seen:
             seen.append(node.id)
     return seen
+
+
+def _depth_first(tree: ast.AST):
+    """Yield nodes from ``tree`` in depth-first (source) order."""
+
+    yield tree
+    for child in ast.iter_child_nodes(tree):
+        yield from _depth_first(child)
 
 
 def parse_restricted_expression(

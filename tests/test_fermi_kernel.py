@@ -237,3 +237,16 @@ def test_versioned_json_example_executes_without_prefilled_user_formula() -> Non
     for record in example["ai_semantic_actions"]:
         _apply(runtime, record["action"], record["payload"])
     assert runtime.state["frontier_test"]["certificate"]["certified"] is True
+
+
+def test_plain_renders_frozenset_in_deterministic_order() -> None:
+    from aie_decision.fermi_kernel import _plain
+
+    first = _plain(frozenset({"b", "a", "c"}))
+    second = _plain(frozenset({"c", "a", "b"}))
+    assert first == second == ["a", "b", "c"]
+
+    nested = _plain(frozenset({frozenset({"y", "x"}), frozenset({"a", "b"})}))
+    # Sorted on the string form so both inner frozensets and outer sets
+    # produce the same ordered list regardless of input iteration order.
+    assert nested == [["a", "b"], ["x", "y"]]

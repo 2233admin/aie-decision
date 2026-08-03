@@ -283,6 +283,23 @@ def compile_expression(source: str) -> CompiledExpression:
             raise ExpressionError("constants must be finite numbers")
         if isinstance(node, ast.Name) and not node.id.isidentifier():
             raise ExpressionError(f"invalid identifier in expression: {node.id!r}")
+        # Exponentiation must use an integer constant so the restricted
+        # expression semantics never silently evaluate ``**`` with a
+        # non-integer exponent (which would be undefined behaviour under
+        # negative bases, float overflow, etc.).
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Pow)
+        ):
+            exponent = node.right
+            if not (
+                isinstance(exponent, ast.Constant)
+                and isinstance(exponent.value, int)
+                and not isinstance(exponent.value, bool)
+            ):
+                raise ExpressionError(
+                    "exponent must be an integer constant"
+                )
 
     names: list[str] = []
     for node in ast.walk(tree):
@@ -335,7 +352,16 @@ def _eval_node(node: ast.AST, values: Mapping[str, float]) -> float:
         if isinstance(node.op, ast.Div):
             return left / right
         if isinstance(node.op, ast.Pow):
-            return left ** right
+            # The compile step guarantees integer constant exponents; the
+            # try/except is purely a safety net against runtime overflow
+            # producing a Python ``OverflowError`` that we surface as an
+            # honest ``ExpressionError`` so downstream callers can recover.
+            try:
+                return left ** right
+            except OverflowError as exc:
+                raise ExpressionError(
+                    f"exponentiation overflow for {left} ** {right}"
+                ) from exc
     raise ExpressionError(f"unsupported expression node: {type(node).__name__}")
 
 
@@ -827,20 +853,25 @@ def joint_sample(
     unknown_leaves = tuple(
         leaf.leaf_id for leaf in leaves if isinstance(leaf.marginal, UnknownMarginal)
     )
-    uncertain_non_unknown = [
+    # The copula dimension must include only leaves that are actually
+    # sampled with correlated uniforms: constant leaves are deterministic
+    # and unknown leaves are routed to scenario bounds.  Counting them
+    # would either inflate the equicorrelation limit check or mislead the
+    # Gaussian copula about the structure of joint uncertainty.
+    copula_leaves = [
         leaf
         for leaf in leaves
-        if not isinstance(leaf.marginal, ConstantMarginal)
+        if not isinstance(leaf.marginal, (ConstantMarginal, UnknownMarginal))
     ]
-    n_uncertain = len(uncertain_non_unknown)
-
-    # Validate negative equicorrelation before any sampling attempt so
-    # that invalid requests produce a clear, deterministic error.
-    if (
-        model.dependence is DependenceCase.NEGATIVE
-        and n_uncertain > 1
-    ):
-        _validate_negative_equicorrelation(model.correlation, n_uncertain)
+    n_copula = len(copula_leaves)
+    # ``n_uncertain`` keeps the previous semantic of "any non-constant
+    # leaf" for downstream reasoning about whether joint propagation is
+    # actually required (an unknown leaf still needs the copula to know
+    # whether the joint structure matters).
+    n_uncertain = sum(
+        0 if isinstance(leaf.marginal, ConstantMarginal) else 1
+        for leaf in leaves
+    )
 
     dependency_gaps = _collect_dependency_gaps(model, unknown_leaves)
     marginal_summary = _marginal_summary(leaves)
@@ -848,7 +879,10 @@ def joint_sample(
 
     # Case A: an unknown marginal is required to produce a target value.
     # We never silently substitute a uniform draw; the scenario envelope
-    # is the only honest numeric summary.
+    # is the only honest numeric summary.  This branch must run BEFORE
+    # negative-equicorrelation validation: the unknown leaf routes the
+    # whole summary into scenario bounds, so we don't want a downstream
+    # matrix-PD failure to mask the unknown-marginal gap.
     if unknown_leaves:
         scenario_bounds = _compute_scenario_bounds(leaves, expression)
         return TargetSummary(
@@ -869,6 +903,15 @@ def joint_sample(
             dependency_gaps=dependency_gaps,
             unknown_leaves=unknown_leaves,
         )
+
+    # Validate negative equicorrelation against the copula dimension only.
+    # Once the unknown-leaf branch is ruled out, the copula count is the
+    # authoritative measure of how many draws share the equicorrelation.
+    if (
+        model.dependence is DependenceCase.NEGATIVE
+        and n_copula > 1
+    ):
+        _validate_negative_equicorrelation(model.correlation, n_copula)
 
     # Joint propagation is required only when more than one non-constant
     # leaf carries uncertainty.
