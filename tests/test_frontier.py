@@ -952,3 +952,40 @@ def test_certify_valid_joint_model_produces_deterministic_certified_output() -> 
     )
     assert certification.status is FrontierStatus.CERTIFIED
     assert certification.certified is True
+
+
+@pytest.mark.parametrize("kind", ["delete", "coarsen"])
+def test_necessity_invalid_intervention_width_is_honest(kind: str) -> None:
+    leaves = [_unknown_leaf("a", domain=(0.5, 1.5)), _unknown_leaf("b", domain=(2.0, 3.0))]
+    expression, model = compile_expression("a"), JointModel(sample_count=64, seed=70)
+    kwargs = {"delete": lambda leaf_id: [leaf for leaf in leaves if leaf.leaf_id != leaf_id]}
+    target, others = leaves[1], [leaves[0]]
+    if kind == "coarsen":
+        target, others = leaves[0], [leaves[1]]
+        kwargs["coarsen"] = lambda leaf_id: _unknown_leaf("a", domain=(0.0, 2.0))
+    evidence = evaluate_necessity(target, others, expression, model, joint_sample(leaves, expression, model), material_degradation=0.1, **kwargs)
+    result = evidence.deletion if kind == "delete" else evidence.coarsening
+    assert result is not None and result.new_status == "invalid_interval"
+    assert any("width_after=invalid" in note for note in result.notes)
+
+
+def test_saturation_catches_replacement_failure_without_crashing() -> None:
+    leaves = [_constant_leaf("anchor", 1.0), _fitted_leaf("b", 1.0, 2.0, 3.0)]
+    expression, model = compile_expression("anchor * b"), JointModel(sample_count=64, seed=80)
+    proposal = lambda *_: RefinementProposal("b", [_constant_leaf("anchor", 0.5)], "collision", 10.0)
+    result = evaluate_saturation(leaves, expression, model, joint_sample(leaves, expression, model), material_improvement_threshold=0.5, next_refinement=proposal)
+    assert result.explored == ()
+    assert any("refinement_replacement_failed" in note for note in result.notes)
+
+
+@pytest.mark.parametrize("invalid_baseline", [True, False])
+def test_saturation_invalid_width_never_claims_narrowing(invalid_baseline: bool) -> None:
+    unknown = [_unknown_leaf("a", domain=(0.5, 1.5)), _constant_leaf("scale", 2.0)]
+    fitted = [_fitted_leaf("a", 0.9, 1.0, 1.1), _constant_leaf("scale", 2.0)]
+    expression, model = compile_expression("a * scale"), JointModel(sample_count=64, seed=82)
+    leaves, replacement = (unknown, fitted) if invalid_baseline else (fitted, unknown)
+    proposal = lambda *_: RefinementProposal("a", [replacement[0]], "replace", 0.5)
+    result = evaluate_saturation(leaves, expression, model, joint_sample(leaves, expression, model), material_improvement_threshold=0.01, next_refinement=proposal)
+    expected = "baseline_invalid" if invalid_baseline else "refinement_invalid_interval"
+    assert any(expected in note for note in result.notes)
+    assert all(item.observed_narrowing == 0.0 for item in result.explored)

@@ -14,6 +14,7 @@ from aie_decision.agent_runtime import (
     BudgetPolicy,
     KernelProtocol,
     PROTOCOL_VERSION,
+    RuntimeError_,
     SCHEMA_VERSION,
     SessionStatus,
 )
@@ -53,6 +54,7 @@ class _CountingKernel:
         return [
             {"name": "expand", "category": "structural", "required_fields": ["node_id", "children"]},
             {"name": "estimate", "category": "measurement", "required_fields": ["node_id", "value", "unit"]},
+            {"name": "evaluate", "category": "evaluation", "required_fields": []},
             {"name": "rollback", "category": "control", "required_fields": ["target_sequence"]},
             {"name": "finalize", "category": "frontier", "required_fields": []},
         ]
@@ -270,6 +272,19 @@ def test_action_budget_exhaustion_rejects_subsequent_actions():
     assert "actions" in second.budget_remaining
 
 
+def test_apply_rejects_finalize_with_structured_message():
+    """``apply`` must reject ``finalize`` and direct callers to the dedicated method."""
+    kernel = _CountingKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    result = runtime.apply(action="finalize", payload={})
+    assert not result.accepted
+    assert result.error["issues"][0]["code"] == "use_finalize_method"
+    # The trajectory records a REJECTED event so the misuse is auditable.
+    last_pair = runtime.trajectory.pairs()[-1]
+    assert last_pair[0].action == "finalize"
+    assert last_pair[1].status is EventStatus.REJECTED
+
+
 def test_evaluation_budget_exhaustion_rejects_finalize():
     kernel = _CountingKernel()
     runtime = AgentRuntime.start(
@@ -278,9 +293,10 @@ def test_evaluation_budget_exhaustion_rejects_finalize():
         kernel=kernel,
         budgets=BudgetPolicy(max_evaluations=0),
     )
-    result = runtime.apply(action="finalize", payload={})
+    result = runtime.apply(action="evaluate", payload={})
     assert not result.accepted
     assert result.error["issues"][0]["code"] == "budget_exhausted"
+    assert result.error["issues"][0]["path"] == "$.evaluations"
 
 
 def test_compute_budget_exhaustion_rejects_expensive_actions():
@@ -307,6 +323,7 @@ def test_depth_budget_exhaustion_rejects_expansion():
     result = runtime.apply(action="expand", payload={"node_id": "root", "children": [{"id": "a", "label": "A"}]})
     assert not result.accepted
     assert result.error["issues"][0]["code"] == "budget_exhausted"
+    assert result.error["issues"][0]["path"] == "$.depth"
 
 
 def test_budget_exhausted_status_transitions_to_partial_on_finalize():
@@ -315,11 +332,14 @@ def test_budget_exhausted_status_transitions_to_partial_on_finalize():
         session_id="s1",
         question="q",
         kernel=kernel,
-        budgets=BudgetPolicy(max_actions=1),
+        budgets=BudgetPolicy(max_actions=2),
     )
+    # Start uses one of the two actions; finalize uses the second and
+    # exhausts the budget.  The certified verdict is demoted to PARTIAL.
     verdict = runtime.finalize()
     assert runtime.status is SessionStatus.PARTIAL
-    assert "frontier" in verdict["evaluation"] or "reasons" in verdict["evaluation"]
+    assert verdict["status"] == "partial"
+    assert "reasons" in verdict["evaluation"]
 
 
 def test_exact_action_budget_accepts_at_boundary():
@@ -355,8 +375,11 @@ def test_exact_evaluation_budget_accepts_at_boundary():
         kernel=kernel,
         budgets=BudgetPolicy(max_evaluations=1),
     )
-    result = runtime.apply(action="finalize", payload={})
-    assert result.accepted
+    # ``finalize`` is the dedicated API.  It consumes the evaluation
+    # budget and the boundary test confirms the inclusive check.
+    verdict = runtime.finalize()
+    assert verdict["status"] in {"insufficient", "partial", "certified"}
+    assert runtime.counters.evaluations == 1
     assert runtime.status is SessionStatus.PARTIAL
 
 
@@ -632,3 +655,389 @@ def test_budget_policy_from_dict_ignores_unknown_keys():
 def test_budget_policy_from_dict_rejects_non_int():
     with pytest.raises(ValueError):
         BudgetPolicy.from_dict({"max_actions": "3"})
+
+
+# ---------------------------------------------------------------------------
+# Item 1 — reject finalize in apply
+# ---------------------------------------------------------------------------
+
+
+def test_apply_rejects_finalize_records_rejection_event():
+    """A rejected finalize through apply() leaves a REJECTED pair in the log."""
+    kernel = _CountingKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    events_before = len(runtime.trajectory.events)
+    result = runtime.apply(action="finalize", payload={})
+    assert not result.accepted
+    assert result.error["issues"][0]["code"] == "use_finalize_method"
+    # One ACTION + one RESULT appended.
+    assert len(runtime.trajectory.events) == events_before + 2
+    last_pair = runtime.trajectory.pairs()[-1]
+    assert last_pair[0].action == "finalize"
+    assert last_pair[1].status is EventStatus.REJECTED
+
+
+# ---------------------------------------------------------------------------
+# Item 2 — record trajectory before committing in-memory state and counters
+# ---------------------------------------------------------------------------
+
+
+class _FailingTrajectory:
+    """A stand-in trajectory that fails on the first ``record_action`` call.
+
+    The runtime must leave the in-memory state and counters unchanged when
+    recording fails.  Subsequent calls (used to record the rejection
+    bookkeeping) succeed so the test can observe the returned
+    ActionResult.
+    """
+
+    def __init__(self, real_trajectory) -> None:
+        self._real = real_trajectory
+        self.actions_recorded = 0
+        self.results_recorded = 0
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def record_action(self, **kwargs):
+        self.actions_recorded += 1
+        if self.actions_recorded == 1:
+            raise RuntimeError("synthetic trajectory failure on record_action")
+        return self._real.record_action(**kwargs)
+
+    def record_result(self, **kwargs):
+        self.results_recorded += 1
+        return self._real.record_result(**kwargs)
+
+
+def test_apply_recording_failure_leaves_state_and_candidate_counters_unchanged():
+    """When ``record_action`` fails, the candidate action's state effect is not committed.
+
+    The runtime must not apply the candidate state or the candidate
+    counters (depth, evaluations, compute) when the trajectory rejects
+    the event.  The action counter is allowed to advance by one for
+    the rejection bookkeeping.
+    """
+    kernel = _CountingKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    # First call uses the real trajectory; second one installs a failing wrapper.
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "root", "children": [{"id": "a", "label": "A"}]},
+    )
+    state_before = dict(runtime.state)
+    depth_before = runtime.counters.depth
+    compute_before = runtime.counters.compute
+    real_trajectory = runtime.trajectory
+    failing = _FailingTrajectory(real_trajectory)
+    # Swap the trajectory in the dataclass field.
+    object.__setattr__(runtime, "trajectory", failing)
+    result = runtime.apply(
+        action="expand",
+        payload={"node_id": "a", "children": [{"id": "b", "label": "B"}]},
+    )
+    # Restore so we can inspect state.
+    object.__setattr__(runtime, "trajectory", real_trajectory)
+    assert not result.accepted
+    assert result.error["issues"][0]["code"] == "recording_failed"
+    # The candidate action never made it to in-memory state.
+    assert runtime.state == state_before
+    # The candidate counters (depth, compute) are not committed.
+    assert runtime.counters.depth == depth_before
+    assert runtime.counters.compute == compute_before
+
+
+def test_apply_depth_uses_candidate_state_not_committed_state():
+    """The depth counter after apply equals the depth surfaced by the candidate state."""
+    kernel = _CountingKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "root", "children": [{"id": "a", "label": "A"}]},
+    )
+    assert runtime.counters.depth == 1
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "a", "children": [{"id": "b", "label": "B"}]},
+    )
+    assert runtime.counters.depth == 2
+
+
+# ---------------------------------------------------------------------------
+# Item 3 — finalize is a no-op on inactive session
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_on_inactive_session_returns_terminal_response_without_events():
+    """``finalize`` after the session has been finalized is a no-op."""
+    kernel = _CountingKernel(certified_after=0)
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    first = runtime.finalize()
+    assert first["status"] == "certified"
+    events_before = len(runtime.trajectory.events)
+    status_before = runtime.status
+    counter_snapshot = BudgetCounters(
+        actions=runtime.counters.actions,
+        evaluations=runtime.counters.evaluations,
+        compute=runtime.counters.compute,
+        depth=runtime.counters.depth,
+    )
+    again = runtime.finalize()
+    assert again["no_op"] is True
+    assert again["status"] == status_before.value
+    # No additional events were recorded by the no-op call.
+    assert len(runtime.trajectory.events) == events_before
+    # Counters are unchanged by the no-op call.
+    assert runtime.counters == counter_snapshot
+    assert runtime.status == status_before
+
+
+def test_finalize_raises_for_irrecoverably_malformed_evaluation_without_dangling_action():
+    """A non-Mapping evaluation raises a controlled error and records no event."""
+    class _MalformedKernel(_CountingKernel):
+        def evaluate_frontier(self, state):  # type: ignore[override]
+            return ["not", "a", "mapping"]
+
+    kernel = _MalformedKernel(certified_after=0)
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    events_before = len(runtime.trajectory.events)
+    with pytest.raises(RuntimeError_):
+        runtime.finalize()
+    # No new events were appended: the malformed evaluation never produced
+    # a dangling finalize ACTION.
+    assert len(runtime.trajectory.events) == events_before
+
+
+# ---------------------------------------------------------------------------
+# Item 4 — validate/normalize frontier fields
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_normalizes_string_reasons_to_list():
+    class _StringReasonsKernel(_CountingKernel):
+        def evaluate_frontier(self, state):  # type: ignore[override]
+            return {"status": "insufficient", "reasons": "single string reason"}
+
+    kernel = _StringReasonsKernel(frontier=[{"id": "a"}])
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    verdict = runtime.finalize()
+    assert verdict["evaluation"]["reasons"] == ["single string reason"]
+
+
+def test_finalize_normalizes_string_blocking_issues_to_list():
+    class _StringBlockingKernel(_CountingKernel):
+        def evaluate_frontier(self, state):  # type: ignore[override]
+            return {
+                "status": "insufficient",
+                "reasons": ["frontier not empty"],
+                "blocking_issues": "node a is open",
+            }
+
+    kernel = _StringBlockingKernel(frontier=[{"id": "a"}])
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    verdict = runtime.finalize()
+    assert verdict["evaluation"]["blocking_issues"] == ["node a is open"]
+
+
+def test_finalize_rejects_malformed_blocking_issues_without_dangling_action():
+    class _BadBlockingKernel(_CountingKernel):
+        def evaluate_frontier(self, state):  # type: ignore[override]
+            return {
+                "status": "insufficient",
+                "reasons": ["frontier not empty"],
+                "blocking_issues": {"this": "is a mapping, not a sequence"},
+            }
+
+    kernel = _BadBlockingKernel(frontier=[{"id": "a"}])
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    events_before = len(runtime.trajectory.events)
+    with pytest.raises(RuntimeError_):
+        runtime.finalize()
+    assert len(runtime.trajectory.events) == events_before
+
+
+# ---------------------------------------------------------------------------
+# Item 5 — replay after rollback correctness
+# ---------------------------------------------------------------------------
+
+
+def test_replay_applies_later_action_after_earlier_rollback():
+    """Replay must include later accepted actions that follow an earlier rollback."""
+    kernel = _CountingKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    # expand 1
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "n1", "children": [{"id": "a", "label": "A"}]},
+    )
+    # expand 2 (will be rolled back)
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "a", "children": [{"id": "b", "label": "B"}]},
+    )
+    # rollback target=expand 2 (sequence 5)
+    runtime.apply(
+        action="rollback",
+        payload={"target_sequence": 5},
+        prior_revision=runtime.trajectory.last_revision(),
+        rollback_target_sequence=5,
+    )
+    # expand 3 (after rollback, must appear in replayed state)
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "n1", "children": [{"id": "c", "label": "C"}]},
+    )
+    live_ids = [e["node_id"] for e in runtime.state["expansions"]]
+    replay = runtime.replay()
+    assert replay["verdict"] == "match"
+    replayed_ids = [e["node_id"] for e in replay["reconstructed_state"]["expansions"]]
+    assert replayed_ids == live_ids == ["n1", "n1"]
+    assert replay["reconstructed_state"]["depth"] == runtime.state["depth"]
+
+
+def test_replay_handles_interleaved_rollbacks():
+    """Multiple rollbacks interleaved with later actions must all be honoured."""
+    kernel = _CountingKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    # expand 1, 2, 3
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "n1", "children": [{"id": "a", "label": "A"}]},
+    )
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "a", "children": [{"id": "b", "label": "B"}]},
+    )
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "b", "children": [{"id": "c", "label": "C"}]},
+    )
+    # rollback expand 3
+    runtime.apply(
+        action="rollback",
+        payload={"target_sequence": 7},
+        prior_revision=runtime.trajectory.last_revision(),
+        rollback_target_sequence=7,
+    )
+    # expand 4
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "a", "children": [{"id": "d", "label": "D"}]},
+    )
+    # rollback expand 2
+    runtime.apply(
+        action="rollback",
+        payload={"target_sequence": 5},
+        prior_revision=runtime.trajectory.last_revision(),
+        rollback_target_sequence=5,
+    )
+    # expand 5
+    runtime.apply(
+        action="expand",
+        payload={"node_id": "n1", "children": [{"id": "e", "label": "E"}]},
+    )
+    replay = runtime.replay()
+    assert replay["verdict"] == "match"
+    assert (
+        replay["reconstructed_state"]["expansions"]
+        == runtime.state["expansions"]
+    )
+    assert replay["reconstructed_state"]["depth"] == runtime.state["depth"]
+
+
+# ---------------------------------------------------------------------------
+# Item 6 — derive action categories from kernel specs
+# ---------------------------------------------------------------------------
+
+
+class _CategorisedKernel:
+    """A kernel whose action_specs surface explicit ``category`` fields."""
+
+    def initial_state(self, question: str) -> dict[str, Any]:
+        return {"question": question, "depth": 0}
+
+    def action_specs(self) -> list[dict[str, Any]]:
+        return [
+            {"name": "structural_action", "category": "structural"},
+            {"name": "evaluation_action", "category": "evaluation"},
+            {"name": "control_action", "category": "control"},
+        ]
+
+    def validate(self, action, payload, state):
+        return []
+
+    def execute(self, action, payload, state):
+        new_state = dict(state)
+        new_state["depth"] = new_state.get("depth", 0) + (1 if action == "structural_action" else 0)
+        return new_state
+
+    def legal_next_actions(self, state):
+        return ["structural_action", "evaluation_action", "control_action"]
+
+    def active_frontier(self, state):
+        return []
+
+    def evaluate_frontier(self, state):
+        return {"status": "insufficient", "reasons": []}
+
+
+def test_evaluation_actions_derived_from_kernel_specs():
+    kernel = _CategorisedKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    assert runtime._evaluation_actions() == {"evaluation_action"}
+
+
+def test_depth_actions_derived_from_kernel_specs():
+    kernel = _CategorisedKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    assert runtime._depth_actions() == {"structural_action"}
+
+
+def test_depth_budget_uses_derived_categories():
+    """The depth budget must gate the kernel's structural action, not a hard-coded name."""
+    kernel = _CategorisedKernel()
+    runtime = AgentRuntime.start(
+        session_id="s1",
+        question="q",
+        kernel=kernel,
+        budgets=BudgetPolicy(max_depth=0),
+    )
+    # The start action itself exhausts the depth budget (0 + 0 reaches 0
+    # which is at the limit), so the session is PARTIAL but the
+    # rejection code must be ``budget_exhausted`` (driven by depth
+    # category metadata), not a hard-coded name like ``expand``.
+    result = runtime.apply(action="structural_action", payload={})
+    assert not result.accepted
+    assert result.error["issues"][0]["code"] == "budget_exhausted"
+
+
+def test_evaluation_budget_uses_derived_categories():
+    """The evaluation budget must gate the kernel's evaluation action."""
+    kernel = _CategorisedKernel()
+    runtime = AgentRuntime.start(
+        session_id="s1",
+        question="q",
+        kernel=kernel,
+        budgets=BudgetPolicy(max_evaluations=0),
+    )
+    result = runtime.apply(action="evaluation_action", payload={})
+    assert not result.accepted
+    assert result.error["issues"][0]["code"] == "budget_exhausted"
+
+
+def test_action_categories_fallback_for_kernel_without_categories():
+    """When the kernel omits ``category`` metadata, the runtime uses name-based fallbacks."""
+    kernel = _CountingKernel()
+    runtime = AgentRuntime.start(session_id="s1", question="q", kernel=kernel)
+    # The CountingKernel does surface categories, so verify the
+    # fallback path with a kernel that omits them entirely.
+    class _NoCategoryKernel(_CountingKernel):
+        def action_specs(self):  # type: ignore[override]
+            return [{"name": "expand"}, {"name": "evaluate"}, {"name": "finalize"}]
+
+    no_cat = _NoCategoryKernel()
+    fallback_runtime = AgentRuntime.start(
+        session_id="s1", question="q", kernel=no_cat,
+    )
+    assert "finalize" in fallback_runtime._evaluation_actions()
+    assert "expand" in fallback_runtime._depth_actions()

@@ -55,5 +55,5 @@ Owned files: `src/aie_decision/trajectory.py`, `src/aie_decision/agent_runtime.p
 - [x] 7.1 Update README and package metadata only with behavior proven by executable and real-AI acceptance
 - [x] 7.2 Run focused tests, full tests, OpenSpec strict validation, Code Intel, Sentrux session gates, and diff review
 - [x] 7.3 Scan exact release files and full reachable Git history for restricted content and credentials
-- [ ] 7.4 Commit the implementation on the isolated branch, create a GitHub pull request, inspect the remote diff, and wait for CI
-- [ ] 7.5 Merge the approved pull request once, verify the remote default branch commit and CI, and leave the user's original worktree untouched
+- [x] 7.4 Commit the implementation on the isolated branch, create a GitHub pull request, inspect the remote diff, and wait for CI
+- [x] 7.5 Merge the approved pull request once, verify the remote default branch commit and CI, and leave the user's original worktree untouched

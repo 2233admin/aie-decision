@@ -268,6 +268,15 @@ def test_parse_restricted_expression_records_variable_count():
     assert sorted(parsed.variables) == ["a", "b", "c", "d"]
 
 
+def test_parse_restricted_expression_variables_follow_source_order():
+    # ``ast.walk`` visits in BFS order and would yield ``b`` before ``a``
+    # when the variable is nested inside a sub-expression on the right;
+    # the project must collect variables in textual source order so that
+    # positional unit bindings line up with the relationship's child list.
+    parsed = parse_restricted_expression("b * a")
+    assert list(parsed.variables) == ["b", "a"]
+
+
 def test_parse_restricted_expression_dimension_evaluation_requires_unit_bindings():
     parsed = parse_restricted_expression(
         "a * b",

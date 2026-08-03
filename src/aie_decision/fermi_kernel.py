@@ -34,6 +34,7 @@ from .fermi_contracts import (
 from .frontier import (
     RefinementProposal,
     SaturationEvidence,
+    SufficiencyEvidence,
     Tolerance,
     certify_frontier,
     evaluate_necessity,
@@ -67,9 +68,29 @@ def _plain(value: Any) -> Any:
         return {item.name: _plain(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, Mapping):
         return {str(key): _plain(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list, set, frozenset)):
+    if isinstance(value, frozenset):
+        # ``frozenset`` iteration order is unspecified and would silently
+        # change state digests across runs; render in deterministic order
+        # by sorting on the string form of each element.
+        items = sorted((_plain(item) for item in value), key=_digest_sort_key)
+        return list(items)
+    if isinstance(value, set):
+        # ``set`` iteration order is unspecified for the same reason; sort
+        # before converting so state exports remain stable.
+        items = sorted((_plain(item) for item in value), key=_digest_sort_key)
+        return list(items)
+    if isinstance(value, (tuple, list)):
         return [_plain(item) for item in value]
     return value
+
+
+def _digest_sort_key(value: Any) -> str:
+    """Stable string key used to order heterogeneous digest elements."""
+
+    try:
+        return str(value)
+    except Exception:  # pragma: no cover - defensive, str() rarely fails
+        return repr(value)
 
 
 def _scope(document: Mapping[str, Any]) -> Scope:
@@ -345,7 +366,34 @@ def _summary_output(summary: TargetSummary) -> dict[str, Any]:
     }
 
 
-def _evaluate(state: Mapping[str, Any]) -> dict[str, Any]:
+class EvaluationContext:
+    """Everything derived from ``state`` that both ``_evaluate`` and
+    ``_frontier_test`` need.  Extracting this guarantees the two entry
+    points stay in lockstep on the active branch, expression, leaves,
+    joint model, summary, tolerance, and sufficiency evidence.
+    """
+
+    __slots__ = ("tree", "atoms", "expression", "leaves", "model", "summary", "tolerance", "sufficiency")
+
+    def __init__(self, *, tree, atoms, expression, leaves, model, summary, tolerance, sufficiency) -> None:
+        self.tree = tree
+        self.atoms = atoms
+        self.expression = expression
+        self.leaves = leaves
+        self.model = model
+        self.summary = summary
+        self.tolerance = tolerance
+        self.sufficiency = sufficiency
+
+
+def _build_evaluation_context(state: Mapping[str, Any]) -> EvaluationContext:
+    """Rebuild the tree, leaf set, joint model, summary, tolerance and
+    sufficiency for the current ``state`` exactly once per kernel call.
+    Both ``_evaluate`` and ``_frontier_test`` consume the resulting
+    context so they cannot diverge on which tree is active, which
+    expression is bound, or which summary gates sufficiency.
+    """
+
     question_doc = _mapping(state.get("question_contract"), "question_contract")
     tree, atoms = _rebuild_tree(
         str(state.get("raw_question") or ""),
@@ -354,43 +402,60 @@ def _evaluate(state: Mapping[str, Any]) -> dict[str, Any]:
     )
     expression = _active_expression(tree)
     leaves = _leaf_specs(tree, atoms, expression)
-    model = _joint_model(state.get("joint_model") if isinstance(state.get("joint_model"), Mapping) else None)
+    model = _joint_model(
+        state.get("joint_model") if isinstance(state.get("joint_model"), Mapping) else None
+    )
     summary = joint_sample(leaves, expression, model)
     tolerance = Tolerance(acceptable_width=float(question_doc["acceptable_width"]))
     sufficiency = evaluate_sufficiency(summary, tolerance)
+    return EvaluationContext(
+        tree=tree,
+        atoms=atoms,
+        expression=expression,
+        leaves=leaves,
+        model=model,
+        summary=summary,
+        tolerance=tolerance,
+        sufficiency=sufficiency,
+    )
+
+
+def _evaluate(state: Mapping[str, Any]) -> dict[str, Any]:
+    context = _build_evaluation_context(state)
     contributions = (
-        reducible_uncertainty(leaves, expression, model, summary)
-        if summary.probability_interval_valid
+        reducible_uncertainty(
+            context.leaves, context.expression, context.model, context.summary
+        )
+        if context.summary.probability_interval_valid
         else ()
     )
     ranking = rank_width_reduction(contributions)
     next_measurement = _plain(ranking[0]) if ranking else None
     return {
-        "expression": expression.source,
-        "leaf_ids": list(expression.variables),
-        "summary": _summary_output(summary),
-        "summary_internal": _plain(summary),
-        "sufficiency": _plain(sufficiency),
+        "expression": context.expression.source,
+        "leaf_ids": list(context.expression.variables),
+        "summary": _summary_output(context.summary),
+        "summary_internal": _plain(context.summary),
+        "sufficiency": _plain(context.sufficiency),
         "uncertainty_contributions": _plain(contributions),
         "next_measurement": next_measurement,
     }
 
 
 def _frontier_test(state: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
-    evaluation = _evaluate(state)
-    question_doc = _mapping(state.get("question_contract"), "question_contract")
-    tree, atoms = _rebuild_tree(
-        str(state.get("raw_question") or ""),
-        question_doc,
-        list(state.get("tree_actions") or []),
-    )
-    expression = _active_expression(tree)
-    leaves = _leaf_specs(tree, atoms, expression)
-    model = _joint_model(state.get("joint_model") if isinstance(state.get("joint_model"), Mapping) else None)
-    summary = joint_sample(leaves, expression, model)
-    tolerance = Tolerance(acceptable_width=float(question_doc["acceptable_width"]))
-    sufficiency = evaluate_sufficiency(summary, tolerance)
+    context = _build_evaluation_context(state)
+    evaluation = {
+        "expression": context.expression.source,
+        "leaf_ids": list(context.expression.variables),
+        "summary": _summary_output(context.summary),
+        "summary_internal": _plain(context.summary),
+        "sufficiency": _plain(context.sufficiency),
+    }
     material_degradation = float(payload.get("material_degradation", 0.1))
+    leaves = context.leaves
+    expression = context.expression
+    model = context.model
+    summary = context.summary
     necessity = tuple(
         evaluate_necessity(
             leaf,
@@ -457,23 +522,27 @@ def _frontier_test(state: Mapping[str, Any], payload: Mapping[str, Any]) -> dict
             notes=("probability_interval_invalid",),
         )
     )
-    certificate = certify_frontier(summary, sufficiency, necessity, saturation)
-    return {
-        **evaluation,
-        "necessity": _plain(necessity),
-        "saturation": _plain(saturation),
-        "certificate": {
-            "status": certificate.status.value,
-            "certified": certificate.certified,
-            "reasons": list(certificate.reasons),
-            "conditional_on": [
-                "declared leaf marginals",
-                "declared joint dependence",
-                "executed deletion interventions",
-                "highest-value exact-measurement refinement",
-            ],
-        },
-    }
+    certificate = certify_frontier(summary, context.sufficiency, necessity, saturation)
+    evaluation.update(
+        {
+            "uncertainty_contributions": _plain(contributions),
+            "next_measurement": _plain(ranked[0]) if ranked else None,
+            "necessity": _plain(necessity),
+            "saturation": _plain(saturation),
+            "certificate": {
+                "status": certificate.status.value,
+                "certified": certificate.certified,
+                "reasons": list(certificate.reasons),
+                "conditional_on": [
+                    "declared leaf marginals",
+                    "declared joint dependence",
+                    "executed deletion interventions",
+                    "highest-value exact-measurement refinement",
+                ],
+            },
+        }
+    )
+    return evaluation
 
 
 class FermiKernel:

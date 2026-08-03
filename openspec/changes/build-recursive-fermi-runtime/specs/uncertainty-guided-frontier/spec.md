@@ -22,6 +22,24 @@ The system SHALL propagate leaf uncertainty through the selected relationship us
 - **WHEN** leaf dependencies could materially change the result but are not established
 - **THEN** the system reports the dependency gap and evaluates declared sensitivity cases before accepting answerability
 
+### Requirement: Joint model v1 scope is independence or one global equicorrelation
+The v1 joint model SHALL support only two declared dependence cases applied to every non-constant, non-unknown sampled leaf:
+
+* ``independent`` — sampled leaves receive independent uniforms.
+* ``positive`` or ``negative`` — sampled leaves receive correlated uniforms via a single Gaussian copula whose off-diagonal entries are the declared ``correlation`` (sign chosen by the case).
+
+A ``rationale`` string is REQUIRED for every non-trivial case (``positive``, ``negative``, or any deviation from independence) and the system SHALL refuse the action when the rationale is empty. The copula dimension excludes constant leaves and unknown leaves; only the sampled leaves share the equicorrelation. When ``negative`` equicorrelation would produce a non-positive-definite matrix the system SHALL reject the model before any sampling attempt with a clear, deterministic error.
+
+The system SHALL NOT accept arbitrary correlation matrices, pairwise dependence graphs, conditional dependence graphs, or per-pair correlation overrides in v1. Requests for richer dependence MUST be rejected at validation time and reported as a documented gap (``dependence_unsupported_v1``) so the AI can either supply the rationale for one global equicorrelation, declare independence, or downgrade the joint model to scenario bounds.
+
+#### Scenario: AI requests an unsupported joint structure
+- **WHEN** the AI submits a joint model that specifies a custom correlation matrix, a conditional graph, or per-pair overrides
+- **THEN** the system rejects the action, surfaces ``dependence_unsupported_v1`` as a gap, and exposes the actual joint structure it fell back to so the AI can revise the model
+
+#### Scenario: Rationale is missing for non-independent dependence
+- **WHEN** the AI declares ``positive`` or ``negative`` dependence without supplying a rationale
+- **THEN** the system rejects the action with a ``rationale_required`` error and leaves the previous joint model in place
+
 ### Requirement: Uncertainty contribution controls search priority
 The system SHALL estimate how much each unresolved or uncertain node contributes to the target interval width and SHALL return the node with the highest expected value from further decomposition or measurement.
 

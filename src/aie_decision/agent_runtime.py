@@ -29,6 +29,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from .trajectory import (
     PROTOCOL_VERSION,
     SCHEMA_VERSION,
+    EventKind,
     EventStatus,
     Trajectory,
     TrajectoryError,
@@ -243,6 +244,26 @@ def _default_compute_cost(action: str) -> int:
     return 1
 
 
+# Compatibility fallback for the budget category lookups.  Used when the
+# injected kernel's ``action_specs`` lacks a ``category`` field, so the
+# runtime does not drift onto a specific kernel's action names.
+_FALLBACK_EVALUATION_ACTIONS = frozenset({"evaluate", "test_frontier", "finalize", "certify"})
+_FALLBACK_DEPTH_ACTIONS = frozenset({"expand", "propose_alternative", "alternative"})
+
+_EVALUATION_CATEGORIES = frozenset({
+    "evaluation",
+    "frontier",
+    "certification",
+    "frontier_evaluation",
+})
+_DEPTH_CATEGORIES = frozenset({
+    "structural",
+    "expansion",
+    "tree",
+    "decomposition",
+})
+
+
 def _structure_error(
     code: str, path: str, message: str, **extra: Any
 ) -> dict[str, Any]:
@@ -250,6 +271,56 @@ def _structure_error(
     for key, value in extra.items():
         body[key] = value
     return body
+
+
+def _coerce_str_list(value: Any) -> list[str] | None:
+    """Coerce ``value`` to a list of strings, or ``None`` if it is malformed.
+
+    Returns ``None`` only for values that cannot be coerced at all (e.g.
+    a bare ``int``, ``None``, or a mapping).  An empty container, a
+    bare string, or a sequence of arbitrary objects is normalised.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        coerced: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            coerced.append(str(item))
+        return coerced
+    return None
+
+
+def _normalize_frontier_evaluation(
+    evaluation: Any,
+) -> dict[str, Any] | None:
+    """Normalize a kernel frontier evaluation.
+
+    Returns the evaluation as a JSON-compatible mapping, or ``None`` if
+    the kernel returned something the runtime cannot safely record.
+    ``reasons`` and ``blocking_issues`` are coerced to lists of
+    strings; ``status`` defaults to ``"insufficient"`` when absent.
+    """
+    if not isinstance(evaluation, Mapping):
+        return None
+    normalised: dict[str, Any] = dict(evaluation)
+    status = normalised.get("status")
+    if status is None:
+        normalised["status"] = "insufficient"
+    elif not isinstance(status, str) or not status.strip():
+        return None
+    reasons = _coerce_str_list(normalised.get("reasons"))
+    if reasons is None:
+        return None
+    normalised["reasons"] = reasons
+    blocking = _coerce_str_list(normalised.get("blocking_issues"))
+    if blocking is None:
+        return None
+    normalised["blocking_issues"] = blocking
+    return normalised
 
 
 # ---------------------------------------------------------------------------
@@ -410,23 +481,51 @@ class AgentRuntime:
                 budget_remaining=self._budget_remaining(),
             )
 
+        if action == "finalize":
+            # ``finalize`` is the dedicated terminal-request API; it must
+            # never be silently accepted as a kernel action through
+            # ``apply``.  Reject with a structured message so callers
+            # learn to invoke the dedicated ``finalize`` method.
+            return self._rejected_result(
+                action="finalize",
+                payload=payload_dict,
+                prior_revision=self.trajectory.last_revision(),
+                code="use_finalize_method",
+                message=(
+                    "finalize is not accepted through apply(); call the dedicated "
+                    "finalize() method to request a frontier evaluation"
+                ),
+                payload_digest=payload_digest_fn(payload_dict),
+            )
+
         payload_hash = payload_digest_fn(payload_dict)
         current_revision = self.trajectory.last_revision()
 
-        if self.status is not SessionStatus.ACTIVE:
-            budget_stopped = (
-                self.status is SessionStatus.PARTIAL
-                and self._budget_is_exhausted()
-            )
+        # Optimistic budget check before the status check so the
+        # structured path (e.g. ``$.depth``, ``$.evaluations``) survives
+        # even when the session is already in ``PARTIAL`` because of a
+        # prior exhaustion.  The status check below still rejects
+        # non-budget sessions with ``session_not_active``.
+        budget_violation = self._budget_violation(action=action, compute_cost=compute_cost)
+        if budget_violation is not None:
             return self._rejected_result(
                 action=action,
                 payload=payload_dict,
                 prior_revision=current_revision,
-                code="budget_exhausted" if budget_stopped else "session_not_active",
+                code=budget_violation["code"],
+                message=budget_violation["message"],
+                path=budget_violation.get("path", "$"),
+                payload_digest=payload_hash,
+            )
+
+        if self.status is not SessionStatus.ACTIVE:
+            return self._rejected_result(
+                action=action,
+                payload=payload_dict,
+                prior_revision=current_revision,
+                code="session_not_active",
                 message=(
-                    "session stopped with a partial result because a configured budget is exhausted"
-                    if budget_stopped
-                    else f"session status is {self.status.value}; no further actions accepted"
+                    f"session status is {self.status.value}; no further actions accepted"
                 ),
                 payload_digest=payload_hash,
             )
@@ -438,19 +537,6 @@ class AgentRuntime:
                 prior_revision=current_revision,
                 code="stale_revision",
                 message="prior_revision does not match the current state",
-                payload_digest=payload_hash,
-            )
-
-        # Optimistic budget check before validation so the trajectory only
-        # records meaningful rejections.
-        budget_violation = self._budget_violation(action=action, compute_cost=compute_cost)
-        if budget_violation is not None:
-            return self._rejected_result(
-                action=action,
-                payload=payload_dict,
-                prior_revision=current_revision,
-                code=budget_violation["code"],
-                message=budget_violation["message"],
                 payload_digest=payload_hash,
             )
 
@@ -504,28 +590,85 @@ class AgentRuntime:
             )
         new_digest = state_digest(new_state)
         applied_cost = compute_cost if compute_cost is not None else _default_compute_cost(action)
-        self.state = new_state
-        self.counters = BudgetCounters(
+        # The candidate counters depend on the candidate state (depth) and
+        # on the evaluation category, so compute them in memory before
+        # touching the trajectory.  ``self.state`` and ``self.counters`` are
+        # only committed after the trajectory has accepted the events.
+        candidate_counters = BudgetCounters(
             actions=self.counters.actions + 1,
-            evaluations=self.counters.evaluations + (1 if action in {"evaluate", "finalize", "certify"} else 0),
+            evaluations=(
+                self.counters.evaluations + 1
+                if action in self._evaluation_actions()
+                else self.counters.evaluations
+            ),
             compute=self.counters.compute + applied_cost,
-            depth=self._compute_depth(),
+            depth=self._candidate_depth(new_state),
         )
 
-        action_event = self.trajectory.record_action(
-            action=action,
-            payload=payload_dict,
-            prior_revision=current_revision,
-            recorded_at=_now_iso(self._clock),
-            rollback_target_sequence=rollback_target_sequence,
-        )
-        self.trajectory.record_result(
-            status=EventStatus.ACCEPTED,
-            result_revision=new_digest,
-            state_digest_after=new_digest,
-            recorded_at=_now_iso(self._clock),
-            metadata={"compute_cost": applied_cost},
-        )
+        # Record trajectory events first.  If recording fails, the
+        # in-memory state and counters remain at their pre-call values
+        # so the runtime cannot diverge from the authoritative log.
+        try:
+            action_event = self.trajectory.record_action(
+                action=action,
+                payload=payload_dict,
+                prior_revision=current_revision,
+                recorded_at=_now_iso(self._clock),
+                rollback_target_sequence=rollback_target_sequence,
+            )
+            self.trajectory.record_result(
+                status=EventStatus.ACCEPTED,
+                result_revision=new_digest,
+                state_digest_after=new_digest,
+                recorded_at=_now_iso(self._clock),
+                metadata={"compute_cost": applied_cost},
+            )
+        except Exception as exc:
+            # Trajectory refused the event.  In-memory state and
+            # counters are deliberately left untouched.  Best-effort
+            # close out a dangling ACTION (if any) with a REJECTED
+            # result via the trajectory's own append-only path so the
+            # log remains well-formed, then build a rejected
+            # ``ActionResult`` directly so we never re-invoke the
+            # failing trajectory to record the rejection itself.
+            self._close_dangling_action(
+                prior_revision=current_revision,
+                code="recording_failed",
+                message=(
+                    f"trajectory recording failed: {type(exc).__name__}: {exc}"
+                ),
+            )
+            error_message = (
+                f"trajectory recording failed: {type(exc).__name__}: {exc}"
+            )
+            last_seq = 0
+            try:
+                if len(self.trajectory.events) >= 2:
+                    last_seq = self.trajectory.events[-2].sequence
+            except Exception:
+                last_seq = 0
+            try:
+                last_rev = self.trajectory.last_revision()
+            except Exception:
+                last_rev = current_revision
+            return ActionResult(
+                accepted=False,
+                status="rejected",
+                action=action,
+                payload_digest=payload_hash,
+                prior_revision=current_revision,
+                result_revision=None,
+                state_digest=last_rev,
+                sequence=last_seq,
+                error={"issues": [_structure_error("recording_failed", "$", error_message)]},
+                legal_next_actions=tuple(self.kernel.legal_next_actions(self.state)),
+                active_frontier=tuple(self.kernel.active_frontier(self.state)),
+                compute_cost=0,
+                budget_remaining=self._budget_remaining(),
+            )
+
+        self.state = new_state
+        self.counters = candidate_counters
         self.updated_at = _now_iso(self._clock)
         self._mark_budget_partial()  # type: ignore[attr-defined]
         legal_next = tuple(self.kernel.legal_next_actions(self.state))
@@ -674,6 +817,7 @@ class AgentRuntime:
         prior_revision: str | None,
         code: str,
         message: str,
+        path: str = "$",
         payload_digest: str | None = None,
     ) -> ActionResult:
         # ``payload_digest`` here is the caller's hash for the rejected
@@ -683,6 +827,7 @@ class AgentRuntime:
         # A budget or status rejection is still appended to history as a
         # REJECTED event so that the AI cannot bypass the gate by simply
         # moving on to a different action.
+        issue = _structure_error(code, path, message)
         self.trajectory.record_action(
             action=action,
             payload=payload,
@@ -691,7 +836,7 @@ class AgentRuntime:
         )
         self.trajectory.record_result(
             status=EventStatus.REJECTED,
-            error={"issues": [_structure_error(code, "$", message)]},
+            error={"issues": [issue]},
             recorded_at=_now_iso(self._clock),
         )
         self.counters = BudgetCounters(
@@ -710,7 +855,7 @@ class AgentRuntime:
             result_revision=None,
             state_digest=self.trajectory.last_revision(),
             sequence=self.trajectory.events[-2].sequence,
-            error={"issues": [_structure_error(code, "$", message)]},
+            error={"issues": [issue]},
             legal_next_actions=tuple(self.kernel.legal_next_actions(self.state)),
             active_frontier=tuple(self.kernel.active_frontier(self.state)),
             compute_cost=0,
@@ -751,20 +896,31 @@ class AgentRuntime:
         any configured budget is exhausted, the runtime demotes a
         ``certified`` verdict to ``PARTIAL`` so the caller cannot mistake
         a budget-driven stop for a genuine frontier certification.
+
+        Once the session leaves ``ACTIVE``, ``finalize`` is a no-op: it
+        must not append events or mutate counters.  It returns a
+        structured terminal response describing the already-decided
+        status.  A truly malformed frontier evaluation (a non-Mapping
+        result, or a ``reasons``/``blocking_issues`` field that cannot
+        be coerced to a list of strings) is a controlled runtime error
+        and never produces a dangling ``finalize`` ACTION event.
         """
 
-        action_event = self.trajectory.record_action(
-            action="finalize",
-            payload={"counters": self.counters.to_dict()},
-            prior_revision=self.trajectory.last_revision(),
-            recorded_at=_now_iso(self._clock),
-        )
-        evaluation = self.kernel.evaluate_frontier(self.state)
-        if not isinstance(evaluation, Mapping):
-            evaluation = {
-                "status": "insufficient",
-                "reasons": ["kernel returned non-mapping evaluation"],
-            }
+        if self.status is not SessionStatus.ACTIVE:
+            return self._terminal_finalize_response(reason="session_not_active")
+
+        # Validate the kernel evaluation BEFORE recording any events so
+        # an irrecoverably malformed evaluation never leaves a dangling
+        # finalize ACTION behind.
+        raw_evaluation = self.kernel.evaluate_frontier(self.state)
+        evaluation = _normalize_frontier_evaluation(raw_evaluation)
+        if evaluation is None:
+            raise RuntimeError_(
+                "kernel returned a malformed frontier evaluation: "
+                "expected a mapping with at least a 'status' field and "
+                "list-of-strings 'reasons' and 'blocking_issues' fields"
+            )
+
         verdict = str(evaluation.get("status", "insufficient"))
         # Finalize itself counts as one action and one evaluation, so
         # the post-finalize counters are the right reference point for
@@ -783,8 +939,39 @@ class AgentRuntime:
                 "reasons", []
             ).append("budget exhausted; finalise produced an honest partial result")
             verdict = "partial"
-        self.frontier_evaluation = dict(evaluation)
+
+        # Record the ACTION and RESULT together so a mid-recording
+        # failure cannot leave the trajectory half-written.  In-memory
+        # state and counters are only committed after the log accepts
+        # both events.
+        prior_revision = self.trajectory.last_revision()
+        try:
+            action_event = self.trajectory.record_action(
+                action="finalize",
+                payload={"counters": self.counters.to_dict()},
+                prior_revision=prior_revision,
+                recorded_at=_now_iso(self._clock),
+            )
+            self.trajectory.record_result(
+                status=EventStatus.ACCEPTED,
+                result_revision=state_digest(self.state),
+                state_digest_after=state_digest(self.state),
+                recorded_at=_now_iso(self._clock),
+                metadata={"finalize": True, "previous_status": self.status.value},
+            )
+        except Exception as exc:
+            self._close_dangling_action(
+                prior_revision=prior_revision,
+                code="recording_failed",
+                message=f"trajectory recording failed: {type(exc).__name__}: {exc}",
+            )
+            raise RuntimeError_(
+                f"finalize aborted: trajectory recording failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
         previous_status = self.status
+        self.frontier_evaluation = dict(evaluation)
         if verdict == "certified":
             self.status = SessionStatus.CERTIFIED
         elif verdict == "partial":
@@ -794,13 +981,6 @@ class AgentRuntime:
         else:
             self.status = SessionStatus.INSUFFICIENT
         self.counters = projected_counters
-        self.trajectory.record_result(
-            status=EventStatus.ACCEPTED,
-            result_revision=state_digest(self.state),
-            state_digest_after=state_digest(self.state),
-            recorded_at=_now_iso(self._clock),
-            metadata={"finalize": True, "previous_status": previous_status.value},
-        )
         self.updated_at = _now_iso(self._clock)
         return {
             "schema_version": SCHEMA_VERSION,
@@ -813,6 +993,21 @@ class AgentRuntime:
             "budget_remaining": self._budget_remaining(),
         }
 
+    def _terminal_finalize_response(self, *, reason: str) -> dict[str, Any]:
+        """Return a structured no-op response for an already-terminal session."""
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "protocol_version": PROTOCOL_VERSION,
+            "session_id": self.session_id,
+            "sequence": None,
+            "evaluation": self.frontier_evaluation,
+            "status": self.status.value,
+            "current_revision": self.trajectory.last_revision(),
+            "budget_remaining": self._budget_remaining(),
+            "no_op": True,
+            "reason": reason,
+        }
+
     def replay(self) -> dict[str, Any]:
         """Re-run the trajectory through the kernel and verify digests.
 
@@ -820,6 +1015,13 @@ class AgentRuntime:
         whether every accepted action produced the recorded digest.  The
         runtime does not mutate the running state — it walks the
         trajectory in a sandboxed copy.
+
+        Control actions (``start``, ``rollback``, ``finalize``) are not
+        kernel calls: their effect is the trajectory's projection up to
+        that pair.  Re-projecting at each control action lets a later
+        accepted action that follows an earlier rollback still see the
+        state the runtime would have computed, so replay reconstructs
+        the same live state as ``_project_state`` after a rollback.
         """
 
         if self.trajectory.is_empty():
@@ -842,17 +1044,25 @@ class AgentRuntime:
         # Collect rolled-back sequences before replay so that neither the
         # rollback action nor its target is executed in the projection.
         rolled_back: set[int] = self.trajectory.rolled_back_sequences()
-        for action_event, result_event in self.trajectory.pairs():
+        all_pairs = self.trajectory.pairs()
+        cumulative_pairs: list[tuple[Any, Any]] = []
+        for action_event, result_event in all_pairs:
             if result_event.status is not EventStatus.ACCEPTED:
+                cumulative_pairs.append((action_event, result_event))
                 continue
-            # Rollback and finalize are runtime projection controls, never
-            # semantic kernel actions.  A kernel must not be required to
-            # implement either operation for replay to be authoritative.
+            # Rollback's target is excluded from the live state regardless
+            # of when the rollback was issued.
             if action_event.sequence in rolled_back:
+                cumulative_pairs.append((action_event, result_event))
                 continue
+            cumulative_pairs.append((action_event, result_event))
             try:
                 if action_event.action in {"start", "rollback", "finalize"}:
-                    candidate = state
+                    # Re-project the state up to and including this
+                    # control pair so a later accepted action that
+                    # follows an earlier rollback sees the same live
+                    # state the runtime would have computed.
+                    candidate = self._project_state(pairs=cumulative_pairs)
                 else:
                     candidate = _copy_state(self.kernel.execute(
                         action_event.action, action_event.payload, state
@@ -899,6 +1109,94 @@ class AgentRuntime:
             return int(self.state["depth"])
         return self.counters.depth
 
+    def _candidate_depth(self, candidate_state: Mapping[str, Any]) -> int:
+        # Depth derived strictly from the candidate state, before the
+        # in-memory ``self.state`` has been committed.  This lets the
+        # runtime build new counters without mutating self.state.
+        if isinstance(candidate_state, Mapping) and "depth" in candidate_state:
+            value = candidate_state["depth"]
+            if isinstance(value, bool):
+                return self.counters.depth
+            if isinstance(value, int):
+                return int(value)
+        return self.counters.depth
+
+    def _action_categories(self) -> dict[str, str]:
+        """Return ``{action_name: category}`` derived from kernel ``action_specs``.
+
+        Kernels may surface a ``category`` on each spec.  When no
+        category is available the returned mapping is empty and the
+        runtime falls back to its compatibility name sets.  Exceptions
+        Kernel exceptions are swallowed so a buggy spec cannot crash
+        bookkeeping.
+        """
+        categories: dict[str, str] = {}
+        try:
+            specs = list(self.kernel.action_specs())
+        except Exception:
+            return categories
+        for spec in specs:
+            if not isinstance(spec, Mapping):
+                continue
+            name = spec.get("name")
+            category = spec.get("category")
+            if isinstance(name, str) and name and isinstance(category, str) and category:
+                categories[name] = category
+        return categories
+
+    def _evaluation_actions(self) -> set[str]:
+        """Action names that consume the evaluation budget.
+
+        If the kernel supplies ``category`` metadata, we trust that
+        taxonomy.  Otherwise we fall back to a name-based compatibility
+        set so the runtime does not hard-code a specific kernel's
+        action names.
+        """
+        categories = self._action_categories()
+        if categories:
+            return {
+                name
+                for name, category in categories.items()
+                if category in _EVALUATION_CATEGORIES
+            }
+        return set(_FALLBACK_EVALUATION_ACTIONS)
+
+    def _depth_actions(self) -> set[str]:
+        """Action names that consume the depth budget."""
+        categories = self._action_categories()
+        if categories:
+            return {
+                name
+                for name, category in categories.items()
+                if category in _DEPTH_CATEGORIES
+            }
+        return set(_FALLBACK_DEPTH_ACTIONS)
+
+    def _close_dangling_action(
+        self, *, prior_revision: str | None, code: str, message: str
+    ) -> None:
+        """Best-effort repair of a trailing ACTION that never received a RESULT.
+
+        Used when ``record_action`` succeeded but ``record_result`` raised
+        (or vice versa).  The runtime only invokes this for programming
+        errors so a failure here is itself swallowed quietly; the
+        in-memory state and counters remain at their pre-call values.
+        """
+        events = self.trajectory.events
+        if not events or events[-1].kind is not EventKind.ACTION:
+            return
+        try:
+            self.trajectory.record_result(
+                status=EventStatus.REJECTED,
+                error={"issues": [_structure_error(code, "$", message)]},
+                recorded_at=_now_iso(self._clock),
+            )
+        except Exception:
+            # If the trajectory is in an unrecoverable state, leave it
+            # alone.  The runtime already refused to mutate state.
+            pass
+        _ = prior_revision  # accepted for symmetry; not currently used.
+
     def _budget_remaining(self) -> dict[str, Any]:
         remaining: dict[str, Any] = {}
         if self.budgets.max_actions is not None:
@@ -925,7 +1223,7 @@ class AgentRuntime:
             )
         if (
             self.budgets.max_evaluations is not None
-            and action in {"evaluate", "finalize", "certify"}
+            and action in self._evaluation_actions()
             and self.counters.evaluations + 1 > self.budgets.max_evaluations
         ):
             return _structure_error(
@@ -945,7 +1243,7 @@ class AgentRuntime:
             )
         if (
             self.budgets.max_depth is not None
-            and action in {"expand", "alternative"}
+            and action in self._depth_actions()
             and self.counters.depth + 1 > self.budgets.max_depth
         ):
             return _structure_error(

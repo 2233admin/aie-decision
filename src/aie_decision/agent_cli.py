@@ -36,7 +36,7 @@ from .agent_runtime import (
     PROTOCOL_VERSION,
     SCHEMA_VERSION,
 )
-from .trajectory import Trajectory
+from .trajectory import Trajectory, state_digest as state_digest_fn
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,11 @@ def build_default_kernel() -> KernelProtocol:
 
 
 def _load_session_document(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"session document not found: {path}") from exc
+    payload = json.loads(text)
     if not isinstance(payload, Mapping):
         raise ValueError("session document must be a JSON object")
     return dict(payload)
@@ -181,7 +185,23 @@ def _write_session_document(path: Path | None, document: Mapping[str, Any]) -> P
     if path is None:
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload_bytes = (json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(document)}.tmp")
+    descriptor = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        # A crash here would leave a half-written sibling; clean it up
+        # before re-raising so the failure is the only visible side effect.
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     return path
 
 
@@ -197,6 +217,18 @@ def _rehydrate(document: Mapping[str, Any], kernel: KernelProtocol) -> AgentRunt
     state = document.get("state") or {}
     if not isinstance(state, Mapping):
         raise ValueError("session state must be an object")
+    # The trajectory is the authoritative record.  The persisted ``state``
+    # is a projection and must match the trajectory's most recent accepted
+    # state digest; otherwise the document has been tampered with or was
+    # serialised by a divergent implementation.
+    expected_revision = trajectory.last_revision()
+    if expected_revision is not None:
+        actual_revision = state_digest_fn(dict(state))
+        if actual_revision != expected_revision:
+            raise ValueError(
+                "persisted state does not match the trajectory's last revision; "
+                "the session document is corrupt or has been tampered with"
+            )
     budgets = BudgetPolicy.from_dict(document.get("budget_policy") or {})
     counters_doc = document.get("budget_counters") or {}
     from .agent_runtime import BudgetCounters, SessionStatus
@@ -234,7 +266,10 @@ def _read_input(path: str) -> dict[str, Any]:
     if path == "-":
         text = sys.stdin.read()
     else:
-        text = Path(path).read_text(encoding="utf-8")
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"input file not found: {path}") from exc
     if not text.strip():
         return {}
     payload = json.loads(text)
@@ -249,7 +284,9 @@ def _output(result: Mapping[str, Any], output: str | None) -> None:
         sys.stdout.write(text)
         sys.stdout.flush()
     else:
-        Path(output).write_text(text, encoding="utf-8")
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -272,6 +309,11 @@ def _build_parser() -> argparse.ArgumentParser:
     start.add_argument("--question", required=True, help="raw quantitative question")
     start.add_argument("--input", help="JSON file with extra metadata and budgets")
     start.add_argument("--session", dest="session_path", help="path to write the new session document")
+    start.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing session document at --session (refused by default)",
+    )
 
     apply = commands.add_parser("apply", help="apply one action to a session")
     add_common(apply)
@@ -306,6 +348,10 @@ def _kernel_from_env() -> KernelProtocol:
     keeps the CLI callable from PowerShell without embedding any model
     provider; production callers wire in their own kernel via the Python
     API or by setting the variable to a fully-qualified factory path.
+
+    Factory errors (missing module, missing attribute, factory raising)
+    are converted to :class:`ValueError` so the CLI can surface them as
+    a single structured JSON document without a Python traceback.
     """
 
     factory_path = os.environ.get("AIE_AGENT_KERNEL")
@@ -314,9 +360,15 @@ def _kernel_from_env() -> KernelProtocol:
     module_name, _, attr = factory_path.partition(":")
     if not attr:
         attr = "build"
-    module = __import__(module_name, fromlist=[attr])
-    factory = getattr(module, attr)
-    return factory()
+    try:
+        module = __import__(module_name, fromlist=[attr])
+        factory = getattr(module, attr)
+        return factory()
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"AIE_AGENT_KERNEL factory {factory_path!r} could not be loaded: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def _do_discover(args: argparse.Namespace) -> int:
@@ -339,6 +391,25 @@ def _do_start(args: argparse.Namespace) -> int:
     metadata = dict(extra.get("metadata") or {})
     budgets_doc = extra.get("budgets") or {}
     budgets = BudgetPolicy.from_dict(budgets_doc) if isinstance(budgets_doc, Mapping) else BudgetPolicy()
+    session_path = Path(args.session_path) if args.session_path else None
+    if session_path is not None and session_path.exists() and not getattr(args, "force", False):
+        # Refuse to clobber an existing document; the caller must opt in
+        # with ``--force``.  The error is structured so PowerShell and
+        # other callers can branch on the code without parsing a traceback.
+        _output(
+            {
+                "error": {
+                    "code": "session_exists",
+                    "message": (
+                        f"refusing to overwrite existing session document at {session_path}; "
+                        "pass --force to replace it"
+                    ),
+                    "path": str(session_path),
+                }
+            },
+            args.output if not args.pretty else "-",
+        )
+        return 2
     kernel = _kernel_from_env()
     runtime = AgentRuntime.start(
         session_id=args.session_id,
@@ -348,7 +419,7 @@ def _do_start(args: argparse.Namespace) -> int:
         metadata=metadata,
     )
     document = runtime.export()
-    session_path = _write_session_document(Path(args.session_path) if args.session_path else None, document)
+    session_path = _write_session_document(session_path, document)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "protocol_version": PROTOCOL_VERSION,
@@ -465,10 +536,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "replay":
             return _do_replay(args)
         parser.error(f"unsupported command: {args.command}")
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, TypeError, OSError, json.JSONDecodeError) as exc:
         # Errors are surfaced on BOTH stdout and stderr as a single JSON
         # document.  Stdout lets callers parse the protocol uniformly;
-        # stderr preserves the original logging channel.
+        # stderr preserves the original logging channel.  The catch set
+        # covers ordinary CLI failures (bad JSON, missing files, malformed
+        # inputs, and a misconfigured kernel factory) and never includes
+        # ``BaseException`` — genuine programmer errors still surface as a
+        # real traceback for diagnosis.
         document = json.dumps(
             {"error": type(exc).__name__, "message": str(exc)},
             ensure_ascii=False,

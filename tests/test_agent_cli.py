@@ -11,7 +11,7 @@ import pytest
 
 from aie_decision.agent_cli import build_default_kernel, main
 from aie_decision.agent_runtime import PROTOCOL_VERSION, SCHEMA_VERSION
-from aie_decision.trajectory import EventStatus
+from aie_decision.trajectory import EventStatus, Trajectory, TrajectoryError
 
 
 def _run_cli(args, *, input_text=None):
@@ -300,3 +300,200 @@ def test_default_kernel_is_provider_free():
     assert new_state["depth"] == 1
     evaluation = kernel.evaluate_frontier(new_state)
     assert evaluation["status"] == "insufficient"
+
+
+# ---------------------------------------------------------------------------
+# start: overwrite rejection / --force
+# ---------------------------------------------------------------------------
+
+
+def test_start_rejects_existing_session_without_force(tmp_path):
+    session_path = tmp_path / "session.json"
+    # First start creates the document.
+    code, _, _ = _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Q?",
+        "--session", str(session_path),
+    ])
+    assert code == 0
+    # Second start over the same path must refuse and emit a structured
+    # error on stdout (no traceback, exit code 2).
+    code, out, err = _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Q?",
+        "--session", str(session_path),
+    ])
+    assert code == 2
+    assert "Traceback" not in err
+    body = json.loads(out)
+    assert body["error"]["code"] == "session_exists"
+    assert str(session_path) in body["error"]["path"]
+
+
+def test_start_force_overwrites_existing_session(tmp_path):
+    session_path = tmp_path / "session.json"
+    _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Old question?",
+        "--session", str(session_path),
+    ])
+    code, out, _ = _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "New question?",
+        "--session", str(session_path),
+        "--force",
+    ])
+    assert code == 0
+    body = json.loads(out)
+    assert body["session_id"] == "s1"
+    document = json.loads(session_path.read_text(encoding="utf-8"))
+    assert document["question"] == "New question?"
+
+
+# ---------------------------------------------------------------------------
+# Atomic session persistence
+# ---------------------------------------------------------------------------
+
+
+def test_write_session_creates_parent_directories(tmp_path):
+    nested = tmp_path / "deep" / "nested" / "session.json"
+    code, _, _ = _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Q?",
+        "--session", str(nested),
+    ])
+    assert code == 0
+    assert nested.is_file()
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    assert document["session_id"] == "s1"
+
+
+def test_write_session_cleans_up_temp_on_failure(tmp_path, monkeypatch):
+    session_path = tmp_path / "session.json"
+
+    def boom(src, dst):
+        # Simulate an interrupted write by raising after the temp file
+        # has been created and fsync'd but before the rename succeeds.
+        raise OSError("simulated crash during rename")
+
+    monkeypatch.setattr(sys.modules[main.__module__].os, "replace", boom)
+    code, out, err = _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Q?",
+        "--session", str(session_path),
+    ])
+    # The failure should be surfaced as a structured JSON error and must
+    # not leave a stale ``.tmp`` file behind in the same directory.
+    assert code == 2
+    assert "Traceback" not in err
+    body = json.loads(out)
+    assert body["error"] == "OSError"
+    assert not session_path.exists()
+    siblings = list(tmp_path.iterdir())
+    assert siblings == [], f"unexpected leftovers in {tmp_path}: {siblings}"
+
+
+# ---------------------------------------------------------------------------
+# Structured missing-file / type errors
+# ---------------------------------------------------------------------------
+
+
+def test_apply_missing_session_returns_structured_error(tmp_path, monkeypatch):
+    missing = tmp_path / "no-such-session.json"
+    monkeypatch.delenv("AIE_AGENT_KERNEL", raising=False)
+    code, out, err = _run_cli([
+        "apply",
+        "--session", str(missing),
+    ])
+    assert code == 2
+    assert "Traceback" not in err
+    body = json.loads(err)
+    assert body["error"] == "FileNotFoundError"
+    assert str(missing) in body["message"]
+
+
+def test_start_missing_input_returns_structured_error(tmp_path, monkeypatch):
+    missing = tmp_path / "no-such-input.json"
+    session_path = tmp_path / "session.json"
+    monkeypatch.delenv("AIE_AGENT_KERNEL", raising=False)
+    code, out, err = _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Q?",
+        "--input", str(missing),
+        "--session", str(session_path),
+    ])
+    assert code == 2
+    assert "Traceback" not in err
+    body = json.loads(err)
+    assert body["error"] == "FileNotFoundError"
+    assert str(missing) in body["message"]
+    assert not session_path.exists()
+
+
+def test_bad_kernel_factory_returns_structured_error(tmp_path, monkeypatch):
+    session_path = tmp_path / "session.json"
+    monkeypatch.setenv("AIE_AGENT_KERNEL", "definitely_not_a_module:build")
+    code, out, err = _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Q?",
+        "--session", str(session_path),
+    ])
+    assert code == 2
+    assert "Traceback" not in err
+    body = json.loads(err)
+    assert body["error"] == "ValueError"
+    assert "AIE_AGENT_KERNEL" in body["message"]
+    assert not session_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Rehydration integrity / tampered state
+# ---------------------------------------------------------------------------
+
+
+def test_rehydrate_rejects_tampered_state(tmp_path):
+    session_path = tmp_path / "session.json"
+    _run_cli([
+        "start",
+        "--session-id", "s1",
+        "--question", "Q?",
+        "--session", str(session_path),
+    ])
+    document = json.loads(session_path.read_text(encoding="utf-8"))
+    # Mutate the persisted state without updating the trajectory; the
+    # CLI must refuse to rehydrate this tampered document.
+    document["state"]["depth"] = 999
+    tampered_path = tmp_path / "tampered.json"
+    tampered_path.write_text(json.dumps(document), encoding="utf-8")
+    code, out, err = _run_cli(["inspect", "--session", str(tampered_path)])
+    assert code == 2
+    assert "Traceback" not in err
+    body = json.loads(err)
+    assert body["error"] == "ValueError"
+    assert "last revision" in body["message"].lower() or "tampered" in body["message"].lower()
+
+
+@pytest.mark.parametrize(
+    ("event_index", "field", "value"),
+    [(0, "payload_digest", "0" * 64), (1, "sequence", 5), (1, "parent_sequence", 99)],
+)
+def test_from_export_rejects_tampered_event(event_index, field, value):
+    trajectory = Trajectory("s1")
+    trajectory.record_action(action="start", payload={"q": "x"}, prior_revision=None)
+    trajectory.record_result(
+        status=EventStatus.ACCEPTED,
+        result_revision="d0",
+        state_digest_after="d0",
+    )
+    exported = trajectory.export()
+    exported["events"][event_index][field] = value
+    with pytest.raises(TrajectoryError):
+        Trajectory.from_export(exported)
