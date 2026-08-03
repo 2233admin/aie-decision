@@ -501,20 +501,31 @@ class AgentRuntime:
         payload_hash = payload_digest_fn(payload_dict)
         current_revision = self.trajectory.last_revision()
 
-        if self.status is not SessionStatus.ACTIVE:
-            budget_stopped = (
-                self.status is SessionStatus.PARTIAL
-                and self._budget_is_exhausted()
-            )
+        # Optimistic budget check before the status check so the
+        # structured path (e.g. ``$.depth``, ``$.evaluations``) survives
+        # even when the session is already in ``PARTIAL`` because of a
+        # prior exhaustion.  The status check below still rejects
+        # non-budget sessions with ``session_not_active``.
+        budget_violation = self._budget_violation(action=action, compute_cost=compute_cost)
+        if budget_violation is not None:
             return self._rejected_result(
                 action=action,
                 payload=payload_dict,
                 prior_revision=current_revision,
-                code="budget_exhausted" if budget_stopped else "session_not_active",
+                code=budget_violation["code"],
+                message=budget_violation["message"],
+                path=budget_violation.get("path", "$"),
+                payload_digest=payload_hash,
+            )
+
+        if self.status is not SessionStatus.ACTIVE:
+            return self._rejected_result(
+                action=action,
+                payload=payload_dict,
+                prior_revision=current_revision,
+                code="session_not_active",
                 message=(
-                    "session stopped with a partial result because a configured budget is exhausted"
-                    if budget_stopped
-                    else f"session status is {self.status.value}; no further actions accepted"
+                    f"session status is {self.status.value}; no further actions accepted"
                 ),
                 payload_digest=payload_hash,
             )
@@ -526,20 +537,6 @@ class AgentRuntime:
                 prior_revision=current_revision,
                 code="stale_revision",
                 message="prior_revision does not match the current state",
-                payload_digest=payload_hash,
-            )
-
-        # Optimistic budget check before validation so the trajectory only
-        # records meaningful rejections.
-        budget_violation = self._budget_violation(action=action, compute_cost=compute_cost)
-        if budget_violation is not None:
-            return self._rejected_result(
-                action=action,
-                payload=payload_dict,
-                prior_revision=current_revision,
-                code=budget_violation["code"],
-                message=budget_violation["message"],
-                path=budget_violation.get("path", "$"),
                 payload_digest=payload_hash,
             )
 
@@ -628,10 +625,12 @@ class AgentRuntime:
             )
         except Exception as exc:
             # Trajectory refused the event.  In-memory state and
-            # counters are deliberately left untouched.  Attempt to
-            # close out the dangling ACTION (if any) with a REJECTED
-            # result so the log remains well-formed, then surface the
-            # failure to the caller.
+            # counters are deliberately left untouched.  Best-effort
+            # close out a dangling ACTION (if any) with a REJECTED
+            # result via the trajectory's own append-only path so the
+            # log remains well-formed, then build a rejected
+            # ``ActionResult`` directly so we never re-invoke the
+            # failing trajectory to record the rejection itself.
             self._close_dangling_action(
                 prior_revision=current_revision,
                 code="recording_failed",
@@ -639,15 +638,33 @@ class AgentRuntime:
                     f"trajectory recording failed: {type(exc).__name__}: {exc}"
                 ),
             )
-            return self._rejected_result(
+            error_message = (
+                f"trajectory recording failed: {type(exc).__name__}: {exc}"
+            )
+            last_seq = 0
+            try:
+                if len(self.trajectory.events) >= 2:
+                    last_seq = self.trajectory.events[-2].sequence
+            except Exception:
+                last_seq = 0
+            try:
+                last_rev = self.trajectory.last_revision()
+            except Exception:
+                last_rev = current_revision
+            return ActionResult(
+                accepted=False,
+                status="rejected",
                 action=action,
-                payload=payload_dict,
-                prior_revision=current_revision,
-                code="recording_failed",
-                message=(
-                    f"trajectory recording failed: {type(exc).__name__}: {exc}"
-                ),
                 payload_digest=payload_hash,
+                prior_revision=current_revision,
+                result_revision=None,
+                state_digest=last_rev,
+                sequence=last_seq,
+                error={"issues": [_structure_error("recording_failed", "$", error_message)]},
+                legal_next_actions=tuple(self.kernel.legal_next_actions(self.state)),
+                active_frontier=tuple(self.kernel.active_frontier(self.state)),
+                compute_cost=0,
+                budget_remaining=self._budget_remaining(),
             )
 
         self.state = new_state

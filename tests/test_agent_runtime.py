@@ -53,6 +53,7 @@ class _CountingKernel:
         return [
             {"name": "expand", "category": "structural", "required_fields": ["node_id", "children"]},
             {"name": "estimate", "category": "measurement", "required_fields": ["node_id", "value", "unit"]},
+            {"name": "evaluate", "category": "evaluation", "required_fields": []},
             {"name": "rollback", "category": "control", "required_fields": ["target_sequence"]},
             {"name": "finalize", "category": "frontier", "required_fields": []},
         ]
@@ -294,6 +295,7 @@ def test_evaluation_budget_exhaustion_rejects_finalize():
     result = runtime.apply(action="evaluate", payload={})
     assert not result.accepted
     assert result.error["issues"][0]["code"] == "budget_exhausted"
+    assert result.error["issues"][0]["path"] == "$.evaluations"
 
 
 def test_compute_budget_exhaustion_rejects_expensive_actions():
@@ -320,6 +322,7 @@ def test_depth_budget_exhaustion_rejects_expansion():
     result = runtime.apply(action="expand", payload={"node_id": "root", "children": [{"id": "a", "label": "A"}]})
     assert not result.accepted
     assert result.error["issues"][0]["code"] == "budget_exhausted"
+    assert result.error["issues"][0]["path"] == "$.depth"
 
 
 def test_budget_exhausted_status_transitions_to_partial_on_finalize():
