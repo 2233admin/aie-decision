@@ -364,9 +364,20 @@ class Trajectory:
         if not isinstance(events, Sequence):
             raise TrajectoryError("exported events must be a sequence")
         trajectory = cls(session_id, clock=clock)
-        for raw in events:
+        for index, raw in enumerate(events):
             if not isinstance(raw, Mapping):
                 raise TrajectoryError("exported event must be an object")
+            expected_sequence = index + 1
+            raw_sequence = raw.get("sequence")
+            if not isinstance(raw_sequence, int) or isinstance(raw_sequence, bool):
+                raise TrajectoryError(
+                    f"exported event {expected_sequence} has invalid sequence: {raw_sequence!r}"
+                )
+            if raw_sequence != expected_sequence:
+                raise TrajectoryError(
+                    f"exported event sequence mismatch at position {expected_sequence}: "
+                    f"got {raw_sequence}"
+                )
             kind_value = raw.get("kind")
             try:
                 kind = EventKind(kind_value)
@@ -382,10 +393,32 @@ class Trajectory:
                 metadata = raw.get("metadata") or {}
                 if not isinstance(metadata, Mapping):
                     raise TrajectoryError("exported ACTION metadata must be an object")
+                prior_revision = raw.get("prior_revision")
+                # The prior_revision on the first ACTION (the session start) must be
+                # ``None``; on every subsequent ACTION it must match the digest the
+                # trajectory has previously produced.  Rejecting mismatches here
+                # prevents a tampered export from being silently re-canonicalised.
+                expected_prior = trajectory.last_revision()
+                if prior_revision != expected_prior:
+                    raise TrajectoryError(
+                        f"exported ACTION at sequence {expected_sequence} has prior_revision "
+                        f"{prior_revision!r}; expected {expected_prior!r}"
+                    )
+                claimed_digest = raw.get("payload_digest")
+                if not isinstance(claimed_digest, str) or not claimed_digest:
+                    raise TrajectoryError(
+                        f"exported ACTION at sequence {expected_sequence} is missing payload_digest"
+                    )
+                actual_digest = payload_digest(dict(payload))
+                if actual_digest != claimed_digest:
+                    raise TrajectoryError(
+                        f"exported ACTION at sequence {expected_sequence} has payload_digest "
+                        f"{claimed_digest!r} that does not match payload {actual_digest!r}"
+                    )
                 trajectory.record_action(
                     action=str(action),
                     payload=dict(payload),
-                    prior_revision=raw.get("prior_revision"),
+                    prior_revision=prior_revision,
                     recorded_at=raw.get("recorded_at"),
                     metadata=dict(metadata),
                     rollback_target_sequence=raw.get("rollback_target_sequence"),
@@ -402,6 +435,13 @@ class Trajectory:
                 metadata = raw.get("metadata") or {}
                 if not isinstance(metadata, Mapping):
                     raise TrajectoryError("exported RESULT metadata must be an object")
+                parent_sequence = raw.get("parent_sequence")
+                expected_parent = trajectory.events[-1].sequence if trajectory.events else None
+                if parent_sequence != expected_parent:
+                    raise TrajectoryError(
+                        f"exported RESULT at sequence {expected_sequence} has parent_sequence "
+                        f"{parent_sequence!r}; expected {expected_parent!r}"
+                    )
                 trajectory.record_result(
                     status=status,
                     result_revision=raw.get("result_revision"),
@@ -410,4 +450,16 @@ class Trajectory:
                     recorded_at=raw.get("recorded_at"),
                     metadata=dict(metadata),
                 )
+                # For ACCEPTED results the caller already supplied the digest
+                # values; the runtime fills in the same fields, so the stored
+                # values must match the exported values byte-for-byte.  This
+                # blocks a tampered export from being silently re-hashed.
+                stored = trajectory.events[-1]
+                for field_name in ("result_revision", "state_digest_after"):
+                    exported_value = raw.get(field_name)
+                    if exported_value != getattr(stored, field_name):
+                        raise TrajectoryError(
+                            f"exported RESULT at sequence {expected_sequence} has "
+                            f"{field_name} {exported_value!r}; expected {getattr(stored, field_name)!r}"
+                        )
         return trajectory
