@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aie-decision"
-version = "0.2.0"
-description = "Auditable question-to-interval operational throughput estimator"
+version = "0.3.0"
+description = "Auditable runtime for AI-directed recursive Fermi decomposition"
 requires-python = ">=3.12"
 
 [project.scripts]
-aie-decision = "aie_decision.cli:main"
+aie-decision = "aie_decision.fermi_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
