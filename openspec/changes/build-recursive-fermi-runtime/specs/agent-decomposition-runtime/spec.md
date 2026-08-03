@@ -5,7 +5,19 @@ Provide a stateful, replayable tool loop in which an external AI can perform rec
 ## ADDED Requirements
 
 ### Requirement: The runtime exposes decomposition actions as tools
-The system SHALL expose machine-readable actions for starting a question, inspecting state, expanding a node, proposing an alternative, estimating a leaf, declaring dependence, evaluating a branch, pruning or rolling back, and finalizing. The first version MUST be callable through a simple Python- or PowerShell-accessible process interface.
+The system SHALL expose machine-readable actions for starting a question, inspecting state, expanding a node, proposing an alternative, estimating a leaf, declaring dependence, testing the frontier, evaluating a branch, rolling back a prior action, and requesting finalization through a dedicated `finalize` operation. The supported action surface is explicitly:
+
+- `start` — initialise a session (recorded automatically).
+- `expand` — propose a measurable identity for one frontier node.
+- `propose_alternative` — propose a different identity for a node.
+- `propose_atom` — attach a structured atomic measurement to a leaf.
+- `set_dependence` — declare the joint dependence assumption.
+- `evaluate` — compile the active branch and propagate declared joint uncertainty.
+- `test_frontier` — execute sufficiency, per-leaf deletion, and best-next-measurement saturation tests.
+- `rollback` — project a prior accepted semantic action out of live state.
+- `finalize` — request a frontier verdict through the dedicated `finalize()` method; `apply` SHALL reject `finalize` with a structured message directing callers to the dedicated method.
+
+The first version MUST be callable through a simple Python- or PowerShell-accessible process interface.
 
 #### Scenario: Discover available actions
 - **WHEN** an AI client starts the tool without repository-specific decomposition data
