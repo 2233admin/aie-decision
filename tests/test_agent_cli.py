@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from aie_decision import agent_cli
 from aie_decision.agent_cli import build_default_kernel, main
 from aie_decision.agent_runtime import PROTOCOL_VERSION, SCHEMA_VERSION
 from aie_decision.trajectory import EventStatus, Trajectory, TrajectoryError
@@ -377,13 +375,13 @@ def test_write_session_creates_parent_directories(tmp_path):
 
 def test_write_session_cleans_up_temp_on_failure(tmp_path, monkeypatch):
     session_path = tmp_path / "session.json"
-    real_replace = os.replace
+
     def boom(src, dst):
         # Simulate an interrupted write by raising after the temp file
         # has been created and fsync'd but before the rename succeeds.
         raise OSError("simulated crash during rename")
 
-    monkeypatch.setattr(agent_cli.os, "replace", boom)
+    monkeypatch.setattr(sys.modules[main.__module__].os, "replace", boom)
     code, out, err = _run_cli([
         "start",
         "--session-id", "s1",
@@ -483,7 +481,11 @@ def test_rehydrate_rejects_tampered_state(tmp_path):
     assert "last revision" in body["message"].lower() or "tampered" in body["message"].lower()
 
 
-def test_from_export_rejects_tampered_payload_digest():
+@pytest.mark.parametrize(
+    ("event_index", "field", "value"),
+    [(0, "payload_digest", "0" * 64), (1, "sequence", 5), (1, "parent_sequence", 99)],
+)
+def test_from_export_rejects_tampered_event(event_index, field, value):
     trajectory = Trajectory("s1")
     trajectory.record_action(action="start", payload={"q": "x"}, prior_revision=None)
     trajectory.record_result(
@@ -492,34 +494,6 @@ def test_from_export_rejects_tampered_payload_digest():
         state_digest_after="d0",
     )
     exported = trajectory.export()
-    exported["events"][0]["payload_digest"] = "0" * 64
-    with pytest.raises(TrajectoryError):
-        Trajectory.from_export(exported)
-
-
-def test_from_export_rejects_tampered_sequence():
-    trajectory = Trajectory("s1")
-    trajectory.record_action(action="start", payload={"q": "x"}, prior_revision=None)
-    trajectory.record_result(
-        status=EventStatus.ACCEPTED,
-        result_revision="d0",
-        state_digest_after="d0",
-    )
-    exported = trajectory.export()
-    exported["events"][1]["sequence"] = 5
-    with pytest.raises(TrajectoryError):
-        Trajectory.from_export(exported)
-
-
-def test_from_export_rejects_tampered_parent_sequence():
-    trajectory = Trajectory("s1")
-    trajectory.record_action(action="start", payload={"q": "x"}, prior_revision=None)
-    trajectory.record_result(
-        status=EventStatus.ACCEPTED,
-        result_revision="d0",
-        state_digest_after="d0",
-    )
-    exported = trajectory.export()
-    exported["events"][1]["parent_sequence"] = 99
+    exported["events"][event_index][field] = value
     with pytest.raises(TrajectoryError):
         Trajectory.from_export(exported)

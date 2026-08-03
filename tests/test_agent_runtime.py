@@ -14,6 +14,7 @@ from aie_decision.agent_runtime import (
     BudgetPolicy,
     KernelProtocol,
     PROTOCOL_VERSION,
+    RuntimeError_,
     SCHEMA_VERSION,
     SessionStatus,
 )
@@ -793,8 +794,6 @@ def test_finalize_on_inactive_session_returns_terminal_response_without_events()
 
 def test_finalize_raises_for_irrecoverably_malformed_evaluation_without_dangling_action():
     """A non-Mapping evaluation raises a controlled error and records no event."""
-    from aie_decision.agent_runtime import RuntimeError_
-
     class _MalformedKernel(_CountingKernel):
         def evaluate_frontier(self, state):  # type: ignore[override]
             return ["not", "a", "mapping"]
@@ -841,8 +840,6 @@ def test_finalize_normalizes_string_blocking_issues_to_list():
 
 
 def test_finalize_rejects_malformed_blocking_issues_without_dangling_action():
-    from aie_decision.agent_runtime import RuntimeError_
-
     class _BadBlockingKernel(_CountingKernel):
         def evaluate_frontier(self, state):  # type: ignore[override]
             return {

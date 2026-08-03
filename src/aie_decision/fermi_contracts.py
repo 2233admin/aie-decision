@@ -437,7 +437,7 @@ def _collect_expression_variables(tree: ast.AST) -> list[str]:
     """Collect variable names in the order they first appear in the source.
 
     ``ast.walk`` traverses the tree in breadth-first order, which diverges
-    from the textual source order whenever a node holds a sub-expression
+    This differs from textual source order whenever a node holds a sub-expression
     that appears before its sibling at the same depth (e.g. ``b * a``
     would otherwise collect ``b`` first and silently rebind the dimension
     of ``a`` to the unit of ``b``).  Walking the tree with a depth-first

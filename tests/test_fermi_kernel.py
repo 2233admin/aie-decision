@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from aie_decision.agent_runtime import AgentRuntime
-from aie_decision.fermi_kernel import FermiKernel
+from aie_decision.fermi_kernel import FermiKernel, _plain
 
 
 RAW_QUESTION = "上海地铁乘客在典型工作日支付多少票款？"
@@ -240,8 +240,6 @@ def test_versioned_json_example_executes_without_prefilled_user_formula() -> Non
 
 
 def test_plain_renders_frozenset_in_deterministic_order() -> None:
-    from aie_decision.fermi_kernel import _plain
-
     first = _plain(frozenset({"b", "a", "c"}))
     second = _plain(frozenset({"c", "a", "b"}))
     assert first == second == ["a", "b", "c"]

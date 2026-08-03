@@ -9,7 +9,7 @@ conditional-saturation checks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import fields, is_dataclass
 from enum import Enum
 import re
 from typing import Any, Mapping, Sequence
@@ -366,7 +366,6 @@ def _summary_output(summary: TargetSummary) -> dict[str, Any]:
     }
 
 
-@dataclass(frozen=True, slots=True)
 class EvaluationContext:
     """Everything derived from ``state`` that both ``_evaluate`` and
     ``_frontier_test`` need.  Extracting this guarantees the two entry
@@ -374,14 +373,17 @@ class EvaluationContext:
     joint model, summary, tolerance, and sufficiency evidence.
     """
 
-    tree: DecompositionState
-    atoms: Mapping[str, Mapping[str, Any]]
-    expression: Any  # CompiledExpression (avoid extra import noise)
-    leaves: tuple[LeafSpec, ...]
-    model: JointModel
-    summary: TargetSummary
-    tolerance: Tolerance
-    sufficiency: SufficiencyEvidence
+    __slots__ = ("tree", "atoms", "expression", "leaves", "model", "summary", "tolerance", "sufficiency")
+
+    def __init__(self, *, tree, atoms, expression, leaves, model, summary, tolerance, sufficiency) -> None:
+        self.tree = tree
+        self.atoms = atoms
+        self.expression = expression
+        self.leaves = leaves
+        self.model = model
+        self.summary = summary
+        self.tolerance = tolerance
+        self.sufficiency = sufficiency
 
 
 def _build_evaluation_context(state: Mapping[str, Any]) -> EvaluationContext:

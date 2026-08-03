@@ -26,7 +26,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -187,23 +186,13 @@ def _write_session_document(path: Path | None, document: Mapping[str, Any]) -> P
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
     payload_bytes = (json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    # Use a sibling temp file in the same directory so ``os.replace`` is
-    # an atomic rename on POSIX and Windows.  ``delete=False`` keeps the
-    # file alive across the fsync; we own the cleanup on every code path.
-    tmp_handle = tempfile.NamedTemporaryFile(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=str(path.parent),
-        delete=False,
-    )
-    tmp_path = Path(tmp_handle.name)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(document)}.tmp")
+    descriptor = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        try:
-            tmp_handle.write(payload_bytes)
-            tmp_handle.flush()
-            os.fsync(tmp_handle.fileno())
-        finally:
-            tmp_handle.close()
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(tmp_path, path)
     except BaseException:
         # A crash here would leave a half-written sibling; clean it up

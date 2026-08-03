@@ -1127,7 +1127,7 @@ class AgentRuntime:
         Kernels may surface a ``category`` on each spec.  When no
         category is available the returned mapping is empty and the
         runtime falls back to its compatibility name sets.  Exceptions
-        from the kernel are swallowed so a buggy spec cannot crash
+        Kernel exceptions are swallowed so a buggy spec cannot crash
         bookkeeping.
         """
         categories: dict[str, str] = {}
