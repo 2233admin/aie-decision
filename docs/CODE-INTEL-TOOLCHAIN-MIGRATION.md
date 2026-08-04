@@ -32,38 +32,103 @@ gate.
 
 ## Full pipeline result
 
-The default convenience invocation `code-intel . --mode normal --json`
-remains honestly recorded as `domain_failed` because the repository does not
-contain the pipeline-owned `orchestration/integrations.json`; the diagnostic
-was `manifest reconciliation failed`. This is not a product failure and is
-not hidden.
+The default convenience invocation `code-intel . --mode normal --json` now
+passes with exit code 0, outcome `completed`, and empty domain/process
+failures, after two root causes were resolved:
 
-The canonical compiled runner succeeds when given the canonical beta.5
-manifest explicitly:
+1. **Snapshot identity instability (TOCTOU).** The `ExplicitOverlay`
+   working-tree policy includes untracked files in the snapshot digest.
+   Transient directories (`.codex/`, `.omc/`, `.sentrux/agent-sessions/`)
+   were being created/modified between the parent and child snapshot
+   computations, causing `repo.snapshot` to fail with "repository inputs do
+   not match the expected snapshot identity".  Fixed by adding these
+   directories to `.gitignore`, which excludes them from the overlay via
+   `git ls-files --others --exclude-per-directory=.gitignore`.
 
+2. **Wrong pipeline root in manifest discovery.** The installed
+   `bin/orchestration/integrations.json` causes `pipeline_root()` to resolve
+   to `<AppData>/code-intel/bin/` instead of
+   `<AppData>/code-intel/releases/v0.7.0-beta.5/`.  The doctor and
+   orchestrate Validate checks then look for source files (e.g.
+   `crates/code-intel-cli/src/doctor_bootstrap/mod.rs`) relative to the wrong
+   root.  Fixed by setting the canonical supported env var
+   `CODE_INTEL_INTEGRATIONS_MANIFEST` to the manifest inside the release
+   directory.
+
+   Additionally, the host's global `CODE_INTEL_HOME` env var pointed to a
+   non-existent development directory; when set, doctor bootstrap fails
+   closed with "CODE_INTEL_HOME: directory does not exist".  Unsetting it
+   allows the default derivation (`<pipeline_root>`) to be used.
+
+Verified command:
 ```text
-code-intel run execute --repo . --out <staging> --authority-root <authority> \
-  --final-name <run> \
-  --manifest C:\Users\Administrator\AppData\Local\code-intel\releases\v0.7.0-beta.5\orchestration\integrations.json \
-  --doctor-require-repowise false
+CODE_INTEL_INTEGRATIONS_MANIFEST=<release>/orchestration/integrations.json \
+  code-intel . --mode normal --json
 ```
+Observed: exit 0, outcome `completed`, `failures.domain: []`,
+`failures.process: []`, all DAG nodes passed.
 
-Observed result: exit code 0, `failures.domain: []`, `failures.process: []`,
-and doctor, graph, native-code, Sentrux, inventory, and diagnosis nodes all
-passed. The run used snapshot
-`f72fd148a7affbf6afa9f6225d108ee49a35402e2679a026c1940b5b3595e35c`.
+Tests: `tests/test_code_intel_pipeline.py` — 4/4 pass including adversarial
+fail-closed cases (missing manifest env var, stale CODE_INTEL_HOME).
 
-## Lite-session boundary
+## Lite-session boundary (ESCALATED — OpenSpec 1.6)
 
 The beta.5 compatibility `legacy/Invoke-SentruxAgentTool.ps1` still reads and
-writes `.sentrux/baseline.json` for `session_start`; it does not satisfy the
-required “lite writes only `.sentrux/cache/lite-baseline.json`” contract.
-That task remains open. It was not executed because doing so would mutate the
-native baseline and would conceal the boundary failure.
+writes `.sentrux/baseline.json` for `session_start` / `session_end`.  This
+was verified with a black-box test (`tests/test_lite_session_contract.py`)
+that:
+
+1. Records the native baseline SHA-256 before `session_start`.
+2. Invokes `pwsh -File Invoke-SentruxAgentTool.ps1 session_start .`.
+3. Asserts the native baseline SHA-256 is bit-for-bit identical.
+4. Asserts `.sentrux/cache/lite-baseline.json` was written with a clear
+   tool/engine identity.
+
+**Result: the test FAILS** — `session_start` overwrites the native baseline
+(v4, engine `sentrux-native 2.2.0`, quality 8795) with the lite format
+(tool `sentrux-lite`, quality 8776).  The SHA-256 changes and byte length
+drops from 589 to 387 bytes.
+
+### Upstream gap analysis
+
+No repo-level extension surface exists in canonical beta.5 to redirect lite
+session baseline writes without either:
+
+- Modifying the installed `Invoke-SentruxAgentTool.ps1` (in AppData —
+  forbidden by the task contract).
+- Reimplementing the Sentrux gate evaluator (forbidden — “不要发明第二套
+  Sentrux evaluator”).
+- Adding a compatibility fallback wrapper (forbidden — “不要加兼容 fallback”).
+
+The `CODE_INTEL_REPO_ROOT` env var allows redirecting `sentrux-shim.ps1`
+location, but:
+- `Invoke-SentruxAgentTool.ps1` calls `Invoke-Native “sentrux”` which
+  resolves through `sentrux.cmd` → `sentrux-shim.ps1`.  The shim falls
+  back to `sentrux-lite-core.ps1` when no native `sentrux.exe` is found.
+- `sentrux-lite-core.ps1` hard-codes `Get-BaselinePath` → `.sentrux/baseline.json`.
+- Intercepting `gate --save` in a custom shim would require reimplementing
+  the gate comparison logic (reading from cache baseline, computing metrics,
+  comparing) = second evaluator = forbidden.
+
+### Required upstream changes
+
+To make the cache-only contract implementable from the repository:
+
+- **File**: `crates/code-intel-cli/src/sentrux_gate.rs` or the native
+  `sentrux` binary — add a `--baseline-path <path>` flag to `gate --save`
+  to control the output path.
+- **File**: `legacy/Invoke-SentruxAgentTool.ps1`, function
+  `Invoke-SessionStartTool` (line 506) — accept a `-LiteBaselinePath`
+  parameter and pass it through to the native evaluator.
+- **File**: `legacy/tools/sentrux-shim/sentrux-lite-core.ps1`, function
+  `Get-BaselinePath` (line 253) and `Write-Baseline` (line 258) — accept
+  an override path from an environment variable or command-line flag.
 
 ## Review conclusion
 
-The MVP gate may use the explicit canonical manifest command above. The
-default wrapper's missing-manifest diagnosis and the lite-session contract are
-real toolchain debt, not reasons to alter product assertions or claim a clean
-unqualified pipeline pass.
+The default pipeline now passes with the correct `CODE_INTEL_INTEGRATIONS_MANIFEST`
+env var and `.gitignore` exclusions for transient directories.  The
+lite-session cache-only contract is escalated as an upstream toolchain gap;
+no repo-local implementation is possible without violating the task
+constraints.  Test evidence in `tests/test_lite_session_contract.py`
+demonstrates the violation precisely.

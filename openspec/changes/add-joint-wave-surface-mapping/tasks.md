@@ -6,7 +6,21 @@
 - [x] 1.4 使用原生引擎运行 scan 与 `check --no-ratchet`，确认当前规则通过并记录质量债务
 - [x] 1.5 经人工审核后生成 `code-intel-sentrux-baseline.v4` / `sentrux-native` baseline，并验证 schema 与 engine 字段
 - [ ] 1.6 运行 lite session，证明其只写 `.sentrux/cache/lite-baseline.json` 且不改动原生 baseline
+  - **ESCALATED**: canonical beta.5 has no repo-level extension surface for
+    redirecting lite session baseline writes.  `Invoke-SentruxAgentTool.ps1`
+    calls native `sentrux gate --save` which hard-codes
+    `.sentrux/baseline.json`.  Intercepting via `CODE_INTEL_REPO_ROOT` would
+    require reimplementing the gate evaluator (forbidden).  Required upstream
+    changes: `--baseline-path` flag on `gate --save`, or `-LiteBaselinePath`
+    parameter on `Invoke-SessionStartTool`.  Test evidence in
+    `tests/test_lite_session_contract.py` (FAILS as expected).
 - [x] 1.7 重新运行完整 Code Intel Pipeline 和 Sentrux gate，要求不再出现 `domain_failed` 并记录 artifact directory
+  - Fixed: (a) `.gitignore` exclusions for `.codex/`, `.omc/`,
+    `.sentrux/agent-sessions/` stabilize `ExplicitOverlay` snapshot identity;
+    (b) `CODE_INTEL_INTEGRATIONS_MANIFEST` env var points to correct release
+    manifest, fixing pipeline root resolution.  Stale `CODE_INTEL_HOME` must
+    be unset.  Verified: exit 0, outcome `completed`, empty failures.
+    Tests: `tests/test_code_intel_pipeline.py` (4/4 pass).
 
 ## 2. 契约与依赖
 

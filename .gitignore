@@ -5,3 +5,6 @@ __pycache__/
 .venv/
 dist/
 build/
+.codex/
+.omc/
+.sentrux/agent-sessions/
