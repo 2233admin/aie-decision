@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/wave-mvp-gate-evidence/v1/schema.json",
+  "title": "Wave MVP Gate Evidence v1",
+  "description": "Fail-closed machine-readable gate record that distinguishes implemented, planned, blocked, and verified per OpenSpec task. Requires focused and full pytest results, compiled Code Intel result and publication path, Sentrux rules and ratchet result, independent reviewer evidence, commit, and dirty-file declaration. The validator must preserve real failures and reject missing or mislabeled evidence; it must never create a baseline or make a failed gate pass.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "gate_id",
+    "openspec_tasks",
+    "status",
+    "focused_pytest",
+    "full_pytest",
+    "code_intel",
+    "sentrux",
+    "independent_review",
+    "commit",
+    "dirty_files",
+    "provider",
+    "model"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "wave-mvp-gate-evidence.v1"
+    },
+    "gate_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identifier for this gate run, e.g. 'harden-contract-driven-wave-mvp-4.1'."
+    },
+    "openspec_tasks": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Every OpenSpec task owned or touched by this gate record.",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "status"],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "OpenSpec task identifier, e.g. '4.1'."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["implemented", "planned", "blocked", "verified"],
+            "description": "Per-task status: implemented means code exists, planned means scoped but not started, blocked means a known blocker prevents progress, verified means independently confirmed complete."
+          },
+          "blocker": {
+            "type": "string",
+            "description": "Required when status is 'blocked'; describes the blocking condition."
+          },
+          "owned_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Files owned by this task."
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {"properties": {"status": {"const": "blocked"}}},
+            "then": {"required": ["blocker"]}
+          }
+        ]
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "blocked"],
+      "description": "Aggregate gate status. 'pass' only when every required gate passes. 'blocked' when a known blocker is acknowledged. 'fail' for any real failure."
+    },
+    "focused_pytest": {
+      "type": "object",
+      "required": ["command", "passed"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "output_path": {
+          "type": "string",
+          "description": "Path to saved pytest output for audit."
+        }
+      },
+      "additionalProperties": false
+    },
+    "full_pytest": {
+      "type": "object",
+      "required": ["command", "passed"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "output_path": {
+          "type": "string",
+          "description": "Path to saved pytest output for audit."
+        }
+      },
+      "additionalProperties": false
+    },
+    "code_intel": {
+      "type": "object",
+      "required": ["command", "outcome", "publication_path"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact command used to compile and run Code Intel."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["passed", "failed", "blocked"],
+          "description": "Compiled Code Intel outcome. 'failed' for real failures; 'blocked' when the tool cannot run."
+        },
+        "publication_path": {
+          "type": "string",
+          "description": "Path where compiled Code Intel result was published."
+        },
+        "failure_detail": {
+          "type": "string",
+          "description": "Required when outcome is 'failed'; describes the failure."
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"outcome": {"const": "failed"}}},
+          "then": {"required": ["failure_detail"]}
+        }
+      ]
+    },
+    "sentrux": {
+      "type": "object",
+      "required": ["command", "rules_passed", "ratchet_passed"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact command used to run Sentrux rules and ratchet checks."
+        },
+        "rules_passed": {
+          "type": "boolean",
+          "description": "Whether architecture rules passed. False is a real failure."
+        },
+        "ratchet_passed": {
+          "type": "boolean",
+          "description": "Whether the quality ratchet passed against the baseline. False when the baseline is incompatible."
+        },
+        "baseline_path": {
+          "type": "string",
+          "description": "Path to the baseline used for ratchet comparison."
+        },
+        "failure_detail": {
+          "type": "string",
+          "description": "Required when rules_passed or ratchet_passed is false."
+        }
+      },
+      "additionalProperties": false
+    },
+    "independent_review": {
+      "type": "object",
+      "required": ["reviewer", "outcome", "evidence_path"],
+      "properties": {
+        "reviewer": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the independent reviewer (agent type or human)."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["approved", "changes_requested", "blocked"],
+          "description": "Review outcome. 'changes_requested' and 'blocked' prevent a passing gate."
+        },
+        "evidence_path": {
+          "type": "string",
+          "description": "Path to the review evidence artifact."
+        },
+        "findings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Key findings from the review."
+        }
+      },
+      "additionalProperties": false
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 7,
+      "description": "Full or short commit hash of the gate evidence commit."
+    },
+    "dirty_files": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Files modified but not owned by this gate. Empty array means clean tree for owned scope."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Claude Code provider identifier, e.g. 'anthropic'."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Actual model used, e.g. 'claude-fable-5'."
+    }
+  },
+  "additionalProperties": false
+}
