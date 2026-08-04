@@ -15,7 +15,7 @@
     `Invoke-SessionStartTool`.  Prior violative attempt (commit 300718f,
     `tools/sentrux-shim/` with catch-fallback and second evaluator) removed.
     Tests: `tests/test_lite_session_contract.py` (FAILS as honest gate evidence).
-- [x] 1.7 重新运行完整 Code Intel Pipeline 和 Sentrux gate，要求不再出现 `domain_failed` 并记录 artifact directory
+- [ ] 1.7 重新运行完整 Code Intel Pipeline 和 Sentrux gate，要求不再出现 `domain_failed` 并记录 artifact directory
   - **PARTIAL — ambient default command BLOCKED.** (a) `.gitignore` exclusions
     for `.codex/`, `.omc/`, `.sentrux/agent-sessions/` stabilize
     `ExplicitOverlay` snapshot identity (TOCTOU fix — retained).  (b) The

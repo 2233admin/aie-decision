@@ -1,11 +1,9 @@
 """Black-box gate evidence for lite session cache-only contract (OpenSpec 1.6).
 
-These tests probe the canonical beta.5 session tools WITHOUT any
-CODE_INTEL_REPO_ROOT injection, no tools/sentrux-shim/ override, and
-no environment manipulation.  They record the honest outcome as gate
-evidence — a passing gate requires lite sessions to write only to
-``.sentrux/cache/lite-baseline.json`` without altering the native baseline;
-a blocked gate is reported as a test failure, never hidden behind skip/xfail.
+These tests run session_start / session_end in a **temporary directory**
+(pytest ``tmp_path``), NEVER against the real repository checkout.  The
+real ``.sentrux/baseline.json`` MUST be bit-for-bit identical before and
+after this test module runs.
 
 Requirements derived from:
   openspec/changes/add-joint-wave-surface-mapping/tasks.md (task 1.6)
@@ -16,13 +14,12 @@ Requirements derived from:
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SENTRUX_DIR = REPO_ROOT / ".sentrux"
-NATIVE_BASELINE = SENTRUX_DIR / "baseline.json"
-SESSION_DIR = SENTRUX_DIR / "agent-sessions"
+REAL_BASELINE = REPO_ROOT / ".sentrux" / "baseline.json"
 
 _BETA5_LEGACY = (
     Path(os.environ.get("LOCALAPPDATA", ""))
@@ -39,11 +36,7 @@ def _sha256(path: Path) -> str:
 
 
 def _ambient_env() -> dict[str, str]:
-    """Return the host environment with NO sentrux/code-intel overrides.
-
-    No CODE_INTEL_REPO_ROOT, no CODE_INTEL_INTEGRATIONS_MANIFEST,
-    no CODE_INTEL_HOME.  This is what a fresh PowerShell session sees.
-    """
+    """Return the host environment with NO code-intel overrides."""
     env = os.environ.copy()
     for key in list(env.keys()):
         if key.startswith("CODE_INTEL_"):
@@ -51,15 +44,42 @@ def _ambient_env() -> dict[str, str]:
     return env
 
 
-def _run_session_start(session_id: str) -> dict:
+def _build_temp_repo(tmp: Path) -> tuple[Path, str]:
+    """Build a minimal temp repo with a native baseline for session testing.
+
+    Returns (temp_repo, baseline_sha256_before).
+    """
+    repo = tmp / "test-repo"
+    repo.mkdir(parents=True)
+    sentrux_dir = repo / ".sentrux"
+    sentrux_dir.mkdir()
+
+    # Copy the native v4 baseline from the real checkout into the temp repo.
+    shutil.copy2(str(REAL_BASELINE), str(sentrux_dir / "baseline.json"))
+
+    # Create a minimal rules.toml (required by the tool).
+    (sentrux_dir / "rules.toml").write_text(
+        "[policy]\nmax_cc = 25\nno_god_files = false\n"
+    )
+
+    # Create a minimal .git directory (required by ExplicitOverlay policy).
+    (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+
+    hash_before = _sha256(sentrux_dir / "baseline.json")
+    return repo, hash_before
+
+
+def _run_session_start(repo: Path, session_id: str) -> dict:
+    """Run session_start in a temp repo (NOT the real checkout)."""
     proc = subprocess.run(
         [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", str(_AGENT_TOOL),
-            "session_start", str(REPO_ROOT),
+            "session_start", str(repo),
             "-SessionId", session_id,
         ],
-        capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=60,
+        capture_output=True, text=True, cwd=str(repo), timeout=60,
         env=_ambient_env(),
     )
     assert proc.stdout, f"session_start produced no stdout (exit {proc.returncode})"
@@ -68,15 +88,16 @@ def _run_session_start(session_id: str) -> dict:
     return result
 
 
-def _run_session_end(session_id: str) -> dict:
+def _run_session_end(repo: Path, session_id: str) -> dict:
+    """Run session_end in a temp repo (NOT the real checkout)."""
     proc = subprocess.run(
         [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", str(_AGENT_TOOL),
-            "session_end", str(REPO_ROOT),
+            "session_end", str(repo),
             "-SessionId", session_id,
         ],
-        capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=60,
+        capture_output=True, text=True, cwd=str(repo), timeout=60,
         env=_ambient_env(),
     )
     assert proc.stdout, f"session_end produced no stdout (exit {proc.returncode})"
@@ -85,14 +106,8 @@ def _run_session_end(session_id: str) -> dict:
     return result
 
 
-def _cleanup_session(session_id: str) -> None:
-    for pattern in [f"{session_id}.start.json", f"{session_id}.end.json"]:
-        for path in SESSION_DIR.glob(pattern):
-            path.unlink(missing_ok=True)
-
-
 # ---------------------------------------------------------------------------
-# Prerequisites
+# Prerequisites (read-only, against real checkout)
 # ---------------------------------------------------------------------------
 
 
@@ -101,14 +116,14 @@ def test_prerequisites():
     assert _AGENT_TOOL.is_file(), (
         f"Invoke-SentruxAgentTool.ps1 not found at {_AGENT_TOOL}"
     )
-    assert NATIVE_BASELINE.is_file(), (
-        f"Native baseline not found at {NATIVE_BASELINE}"
+    assert REAL_BASELINE.is_file(), (
+        f"Native baseline not found at {REAL_BASELINE}"
     )
 
 
 def test_native_baseline_schema_is_v4():
-    """The native baseline MUST have schema code-intel-sentrux-baseline.v4."""
-    baseline_data = json.loads(NATIVE_BASELINE.read_text())
+    """The real native baseline MUST have schema v4 (read-only check)."""
+    baseline_data = json.loads(REAL_BASELINE.read_text())
     assert baseline_data.get("schema") == "code-intel-sentrux-baseline.v4", (
         f"Native baseline schema mismatch: expected v4, "
         f"got {baseline_data.get('schema')}"
@@ -121,105 +136,96 @@ def test_native_baseline_schema_is_v4():
 
 
 # ---------------------------------------------------------------------------
-# Gate evidence: session_start alters the native baseline
+# Gate evidence: session_start alters the baseline (in TEMP repo)
 # ---------------------------------------------------------------------------
 
 
-def test_session_start_overwrites_native_baseline():
-    """session_start overwrites the native baseline — 1.6 is BLOCKED.
+def test_session_start_overwrites_baseline_in_temp_repo(tmp_path):
+    """session_start overwrites the baseline in a temp repo — 1.6 is BLOCKED.
 
     OpenSpec 1.6 mandatory conformance case:
       A lite session MUST write only to ``.sentrux/cache/lite-baseline.json``
       and MUST NOT alter the native baseline bytes or SHA-256.
 
+    This test runs session_start in a **temporary directory** (pytest
+    ``tmp_path``), never against the real checkout.  The real
+    ``.sentrux/baseline.json`` is never read or written by this test
+    beyond the prerequisite check.
+
     Current status (2026-08-05): **BLOCKED** — canonical beta.5
     ``Invoke-SentruxAgentTool.ps1`` calls ``sentrux gate --save`` which
-    hard-codes ``.sentrux/baseline.json`` as the output path.  No repo-level
-    extension surface exists to redirect this write.  The test below
-    demonstrates the violation by running session_start and observing the
-    native baseline change.
-
-    This test is a fail-closed probe: it asserts the contract and FAILS
-    when the contract is violated.  Do NOT hide the failure — the failure
-    IS the gate evidence for the upstream blocker.
+    hard-codes ``.sentrux/baseline.json`` as the output path.
     """
-    # Record the native baseline identity BEFORE session_start.
-    hash_before = _sha256(NATIVE_BASELINE)
-    bytes_before = NATIVE_BASELINE.read_bytes()
+    repo, hash_before = _build_temp_repo(tmp_path)
+    baseline = repo / ".sentrux" / "baseline.json"
+    bytes_before = baseline.read_bytes()
+    session_id = "test-lite-tmp"
 
-    # Clean up prior session artifacts.
-    for pattern in ["test-lite-blocked-*.start.json", "test-lite-blocked-*.end.json"]:
-        for stale in SESSION_DIR.glob(pattern):
-            stale.unlink()
+    try:
+        _run_session_start(repo, session_id)
 
-    session_id = f"test-lite-blocked-{hash_before[:12]}"
-    _run_session_start(session_id)
+        hash_after = _sha256(baseline)
+        bytes_after = baseline.read_bytes()
 
-    hash_after = _sha256(NATIVE_BASELINE)
-    bytes_after = NATIVE_BASELINE.read_bytes()
-
-    # === Mandatory conformance assertion ===
-    # This asserts the native baseline MUST be unchanged.  It currently
-    # FAILS because the canonical tool overwrites .sentrux/baseline.json.
-    assert hash_after == hash_before, (
-        f"BLOCKED: session_start ALTERED the native baseline!\n"
-        f"  Upstream gap: Invoke-SentruxAgentTool.ps1 calls sentrux gate --save\n"
-        f"  which hard-codes .sentrux/baseline.json.  No repo-level extension\n"
-        f"  surface exists to redirect this write.\n"
-        f"  SHA-256 before: {hash_before}\n"
-        f"  SHA-256 after:  {hash_after}\n"
-        f"  Byte length before: {len(bytes_before)}\n"
-        f"  Byte length after:  {len(bytes_after)}"
-    )
-
-    _cleanup_session(session_id)
+        # === Mandatory conformance assertion ===
+        # FAILS because canonical tool overwrites .sentrux/baseline.json.
+        assert hash_after == hash_before, (
+            f"BLOCKED: session_start ALTERED the baseline in temp repo!\n"
+            f"  Upstream gap: Invoke-SentruxAgentTool.ps1 calls sentrux gate\n"
+            f"  --save which hard-codes .sentrux/baseline.json.\n"
+            f"  SHA-256 before: {hash_before}\n"
+            f"  SHA-256 after:  {hash_after}\n"
+            f"  Byte length before: {len(bytes_before)}\n"
+            f"  Byte length after:  {len(bytes_after)}"
+        )
+    finally:
+        # Clean up all session/cache artifacts in the temp repo.
+        _cleanup_temp_artifacts(repo, session_id)
 
 
-def test_session_end_overwrites_native_baseline():
-    """session_end also overwrites the native baseline — 1.6 is BLOCKED.
+def test_session_end_overwrites_baseline_in_temp_repo(tmp_path):
+    """session_end also overwrites the baseline in a temp repo.
 
-    After session_start already changed the baseline, session_end writes
-    again, confirming the hard-coded path in canonical beta.5 applies to
-    both session boundaries.
+    Confirms the hard-coded path applies to both session boundaries.
     """
-    hash_before = _sha256(NATIVE_BASELINE)
-    session_id = f"test-lite-end-blocked-{hash_before[:12]}"
-    _run_session_start(session_id)
+    repo, hash_before = _build_temp_repo(tmp_path)
+    baseline = repo / ".sentrux" / "baseline.json"
+    session_id = "test-lite-tmp-end"
 
-    hash_after_start = _sha256(NATIVE_BASELINE)
-    bytes_after_start = NATIVE_BASELINE.read_bytes()
+    try:
+        _run_session_start(repo, session_id)
+        hash_after_start = _sha256(baseline)
+        bytes_after_start = baseline.read_bytes()
 
-    _run_session_end(session_id)
+        _run_session_end(repo, session_id)
+        hash_after_end = _sha256(baseline)
+        bytes_after_end = baseline.read_bytes()
 
-    hash_after_end = _sha256(NATIVE_BASELINE)
-    bytes_after_end = NATIVE_BASELINE.read_bytes()
-
-    assert hash_after_end == hash_after_start, (
-        f"BLOCKED: session_end ALTERED the native baseline after start!\n"
-        f"  Same upstream gap as session_start — sentrux gate --save\n"
-        f"  hard-codes .sentrux/baseline.json.\n"
-        f"  SHA-256 after start: {hash_after_start}\n"
-        f"  SHA-256 after end:   {hash_after_end}\n"
-        f"  Byte length after start: {len(bytes_after_start)}\n"
-        f"  Byte length after end:   {len(bytes_after_end)}"
-    )
-
-    _cleanup_session(session_id)
+        assert hash_after_end == hash_after_start, (
+            f"BLOCKED: session_end ALTERED the baseline after start!\n"
+            f"  SHA-256 after start: {hash_after_start}\n"
+            f"  SHA-256 after end:   {hash_after_end}\n"
+            f"  Byte length after start: {len(bytes_after_start)}\n"
+            f"  Byte length after end:   {len(bytes_after_end)}"
+        )
+    finally:
+        _cleanup_temp_artifacts(repo, session_id)
 
 
 # ---------------------------------------------------------------------------
-# Adversarial: failure must exit non-zero (no tools/sentrux-shim needed)
+# Adversarial: failure must exit non-zero
 # ---------------------------------------------------------------------------
 
 
-def test_session_start_with_nonexistent_path_fails_nonzero():
+def test_session_start_with_nonexistent_path_fails_nonzero(tmp_path):
     """session_start on a non-existent directory MUST exit non-zero."""
+    nonexistent = tmp_path / "_nonexistent_dir_"
     proc = subprocess.run(
         [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", str(_AGENT_TOOL),
             "session_start",
-            str(REPO_ROOT / "_nonexistent_dir_"),
+            str(nonexistent),
             "-SessionId", "test-nonexistent",
         ],
         capture_output=True, text=True, timeout=30,
@@ -229,3 +235,34 @@ def test_session_start_with_nonexistent_path_fails_nonzero():
         f"session_start on non-existent path should fail non-zero, "
         f"got exit {proc.returncode}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _cleanup_temp_artifacts(repo: Path, session_id: str) -> None:
+    """Remove all session/cache artifacts from the temp repo.
+
+    Uses try/except on each path so one failure doesn't block others.
+    """
+    sentrux_dir = repo / ".sentrux"
+
+    # Session evidence files.
+    for pattern in [f"{session_id}.start.json", f"{session_id}.end.json"]:
+        sessions_dir = sentrux_dir / "agent-sessions"
+        if sessions_dir.is_dir():
+            for path in sessions_dir.glob(pattern):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    # Cache directory (lite-baseline.json).
+    cache_dir = sentrux_dir / "cache"
+    if cache_dir.is_dir():
+        try:
+            shutil.rmtree(str(cache_dir), ignore_errors=True)
+        except OSError:
+            pass
