@@ -60,3 +60,47 @@ def test_public_cli_accepts_flat_action_document(tmp_path, monkeypatch) -> None:
     persisted = json.loads(session.read_text(encoding="utf-8"))
     assert persisted["state"]["question_contract"]["unit"] == "trip/day"
     assert persisted["state"]["tree"]["frontier"][0]["node_id"] == "n_0001"
+
+
+def test_public_cli_runs_experimental_closed_loop_search(tmp_path) -> None:
+    request = tmp_path / "search.json"
+    output = tmp_path / "result.json"
+    request.write_text(json.dumps({
+        "run_id": "public-cli-loop",
+        "question": "How many daily buyers?",
+        "target": "daily_buyers",
+        "unit": "buyers/day",
+        "coverage": 0.9,
+        "reference_value": 100,
+        "acceptable_width": 40,
+        "variables": [
+            {"name": "population", "lower": 950, "upper": 1050, "method": "observed"},
+            {
+                "name": "participation_rate",
+                "lower": 0.09,
+                "upper": 0.11,
+                "method": "observed",
+            },
+        ],
+        "candidates": [{
+            "candidate_id": "minimal",
+            "formula": "population * participation_rate",
+            "mutation_kind": "seed",
+        }],
+        "budget": {
+            "max_candidates": 10,
+            "max_rounds": 5,
+            "max_evaluations": 10,
+            "max_seconds": 5,
+        },
+    }), encoding="utf-8")
+
+    code = main([
+        "search-fermi", str(request), "--experimental", "--output", str(output),
+    ])
+
+    assert code == 0
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["status"] == "result-found"
+    assert result["selected_candidate"]["formula"] == "population * participation_rate"
+    assert result["experimental_usable"] is True

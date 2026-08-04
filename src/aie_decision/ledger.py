@@ -31,7 +31,7 @@ _ID_FIELDS = (
     # Prefer the record's own leaf identity before provenance/parent identities.
     # Evidence propositions contain both source_id and evidence_atom_id; choosing
     # source_id collapsed every atom from one source into a false revision chain.
-    "package_id", "evidence_atom_id", "scene_id", "estimate_id", "factor_id",
+    "event_id", "candidate_id", "package_id", "evidence_atom_id", "scene_id", "estimate_id", "factor_id",
     "evaluation_id", "update_id", "graph_id", "source_id", "question_id",
 )
 

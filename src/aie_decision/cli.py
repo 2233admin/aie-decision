@@ -29,6 +29,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     fermi.add_argument("path", type=Path, help="JSON question, formula, and variable ranges")
 
+    search = commands.add_parser(
+        "search-fermi",
+        help="Run the experimental bounded Fermi candidate loop",
+    )
+    search.add_argument("path", type=Path, help="JSON question, variables, candidate graph, and search budget")
+    search.add_argument(
+        "--experimental",
+        action="store_true",
+        help="Acknowledge that the loop is an uncalibrated experimental surface",
+    )
     validate = commands.add_parser("validate", help="Validate a versioned AIE JSON object")
     validate.add_argument("path", type=Path)
     validate.add_argument("--kind", help="Schema kind when it cannot be inferred")
@@ -82,6 +92,15 @@ def _fermi(args: argparse.Namespace) -> int:
     return 0
 
 
+def _search_fermi(args: argparse.Namespace) -> int:
+    if not args.experimental:
+        raise ValueError("search-fermi requires --experimental")
+    from .search import search_fermi
+
+    payload = json.loads(args.path.read_text(encoding="utf-8"))
+    result = search_fermi(payload)
+    print(package_json(result), end="")
+    return 0 if result["status"] == "result-found" else 2
 def _validate(args: argparse.Namespace) -> int:
     document, issues = load_and_validate(args.path, args.kind, raise_on_error=False)
     result = {
@@ -158,6 +177,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _compile(args)
         if args.command == "fermi":
             return _fermi(args)
+        if args.command == "search-fermi":
+            return _search_fermi(args)
         if args.command == "validate":
             return _validate(args)
         if args.command == "render-report":
