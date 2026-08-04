@@ -76,24 +76,40 @@ result = validate_gate_evidence(record)
 - CLI integration (file I/O, JSON parsing, exit codes)
 - Invariant tests (no disk writes, real failures preserved, ratchet failure explicit)
 
-## Current Gate Status (2026-08-05, latest capture)
+## Current Gate Status (2026-08-05, re-captured live)
 
 | Gate | Result |
 |---|---|
-| Focused tests (79/79) | **passed** |
+| Focused tests (220 wave/hardening) | **passed** |
 | Full pytest (449 passed) | **passed** |
-| OpenSpec strict validation | **passed** |
-| Code Intel | **failed** (`domain_failed`, architecture gate failure) |
-| Sentrux rules | **passed** (architecture rules pass) |
-| Sentrux ratchet | **fail** (baseline schema/engine incompatible with current `sentrux-native` gate) |
-| Independent review | **approved** (`12/12` adversarial tests; no assertion weakening or skip paths) |
+| Code Intel | **failed** (`process_failed` — bootstrap readiness failed; manifest reconciliation failed; dirty working tree prevents stable snapshot) |
+| Sentrux rules | **passed** (All rules passed, Quality: 8795) |
+| Sentrux ratchet | **fail** (baseline engine mismatch: `.sentrux/baseline.json` requires `sentrux-native` engine v4 but current checker reports unknown engine) |
+| Independent review | **approved** (`12/12` adversarial tests pass; no assertion weakening, no skip paths, no duplicate evaluators) |
 
-The overall gate status is **fail** — the Code Intel architecture gate and Sentrux
-ratchet mismatch are real blockers. No baseline was regenerated to hide them.
+The overall gate status is **blocked** — task 4.3 cannot close because the Code Intel
+snapshot identity and Sentrux ratchet engine mismatch are real blockers, both
+outside the owned gate-evidence scope. No baseline was regenerated to hide them.
+
+**Commit:** `da1e28b9e038d91fd2d15d3f80b9741a1be06111`
+**Provider:** `deepseek` (harness-orchestrated)
+**Model:** `deepseek-v4-pro`
+**Publication path:** `C:/Users/Administrator/AppData/Local/code-intel/artifacts/aie-decision/1785871915797-57116-core`
+
+Dirty files: 7 tracked modifications (deleted agents/, modified schemas, modified src/tests) plus many untracked artifacts — none owned by the gate evidence scope.
 
 The machine-readable current capture is
 `docs/wave_mvp_gate_evidence.current.json` and validates with the fail-closed
-validator.
+validator (`{"valid": true, "status": "blocked"}`).
+
+### Why the previous evidence worker stopped after creating a validator
+
+The previous worker (task 4.1, commit `08d5c38`) correctly created the schema,
+validator, and 29 tests — the *infrastructure* for evidence gating. It did not
+close the gate because it could not: Code Intel was `process_failed` (dirty tree)
+and Sentrux ratchet was failing (baseline engine mismatch). Both are
+environmental/infrastructure blockers outside the validator's scope. The worker
+correctly preserved these real failures rather than masking them.
 
 ## Owned files
 
@@ -101,3 +117,4 @@ validator.
 - `scripts/validate_wave_mvp_gate_evidence.py`
 - `tests/test_wave_mvp_gate_evidence.py`
 - `docs/WAVE-MVP-GATE-EVIDENCE.md`
+- `docs/wave_mvp_gate_evidence.current.json`

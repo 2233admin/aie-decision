@@ -1,22 +1,138 @@
 {
   "schema_version": "wave-mvp-gate-evidence.v1",
-  "gate_id": "2026-08-05-wave-mvp-latest",
-  "status": "blocked",
+  "gate_id": "harden-contract-driven-wave-mvp-4.1-2026-08-05T03",
   "openspec_tasks": [
-    {"task_id": "3.1", "status": "verified", "owned_files": ["scripts/run_joint_wave_surface_mvp.py", "src/aie_decision/wave_authority.py"]},
-    {"task_id": "3.2", "status": "verified", "owned_files": ["src/aie_decision/wave_authority.py"]},
-    {"task_id": "3.3", "status": "verified", "owned_files": ["tests/test_wave_mvp_adversarial_review.py"]},
-    {"task_id": "4.1", "status": "blocked", "blocker": "Code Intel domain_failed and Sentrux ratchet baseline mismatch"},
-    {"task_id": "4.2", "status": "verified", "owned_files": ["docs/WAVE-MVP-INDEPENDENT-REVIEW.md"]},
-    {"task_id": "4.3", "status": "blocked", "blocker": "Required Code Intel and Sentrux quality gates are not green"}
+    {
+      "task_id": "1.1",
+      "status": "verified",
+      "owned_files": [
+        "contracts/wave_mvp_scenario_matrix.json"
+      ]
+    },
+    {
+      "task_id": "1.2",
+      "status": "verified",
+      "owned_files": [
+        "schemas/wave-mvp-completion.schema.json",
+        "scripts/validate_wave_mvp_completion.py"
+      ]
+    },
+    {
+      "task_id": "2.1",
+      "status": "verified",
+      "owned_files": [
+        "scripts/run_joint_wave_surface_mvp.py",
+        "tests/test_joint_wave_surface_mvp.py",
+        "tests/test_wave_contract_hardening.py"
+      ]
+    },
+    {
+      "task_id": "2.2",
+      "status": "verified",
+      "owned_files": [
+        "tests/test_joint_wave_surface_mvp.py"
+      ]
+    },
+    {
+      "task_id": "2.3",
+      "status": "verified",
+      "owned_files": [
+        "tests/test_wave_contract_hardening.py"
+      ]
+    },
+    {
+      "task_id": "3.1",
+      "status": "verified",
+      "owned_files": [
+        "scripts/run_joint_wave_surface_mvp.py",
+        "src/aie_decision/wave_authority.py"
+      ]
+    },
+    {
+      "task_id": "3.2",
+      "status": "verified",
+      "owned_files": [
+        "src/aie_decision/wave_authority.py",
+        "tests/test_wave_authority.py"
+      ]
+    },
+    {
+      "task_id": "3.3",
+      "status": "verified",
+      "owned_files": [
+        "tests/test_wave_mvp_adversarial_review.py"
+      ]
+    },
+    {
+      "task_id": "4.1",
+      "status": "implemented",
+      "owned_files": [
+        "schemas/wave_mvp_gate_evidence.schema.json",
+        "scripts/validate_wave_mvp_gate_evidence.py",
+        "tests/test_wave_mvp_gate_evidence.py",
+        "docs/WAVE-MVP-GATE-EVIDENCE.md",
+        "docs/wave_mvp_gate_evidence.current.json"
+      ]
+    },
+    {
+      "task_id": "4.2",
+      "status": "verified",
+      "owned_files": [
+        "contracts/wave_mvp_adversarial_review_matrix.json",
+        "tests/test_wave_mvp_adversarial_review.py"
+      ]
+    },
+    {
+      "task_id": "4.3",
+      "status": "blocked",
+      "blocker": "Code Intel bootstrap/doctor fails with snapshot identity mismatch (dirty working tree); Sentrux ratchet fails with baseline engine mismatch (sentrux-native v4 vs unknown engine). Neither is fixable within owned gate-evidence scope."
+    }
   ],
-  "focused_pytest": {"command": ".\\.venv\\Scripts\\python.exe -m pytest -q tests/test_wave_mvp_adversarial_review.py tests/test_wave_authority.py tests/test_joint_wave_surface_mvp.py tests/test_wave_contract_hardening.py tests/test_wave_mvp_gate_evidence.py", "passed": true},
-  "full_pytest": {"command": ".\\.venv\\Scripts\\python.exe -m pytest -q", "passed": true},
-  "code_intel": {"command": "code-intel . --mode normal --json", "outcome": "failed", "publication_path": "C:\\Users\\Administrator\\AppData\\Local\\code-intel\\artifacts\\aie-decision\\1785870980628-24308-core", "failure_detail": "domain_failed: architecture gate failure at diagnosis.hospital"},
-  "sentrux": {"command": "code-intel sentrux check .", "rules_passed": true, "ratchet_passed": false, "baseline_path": ".sentrux/baseline.json", "failure_detail": "baseline engine/schema mismatch: expected sentrux-native/code-intel-sentrux-baseline.v4"},
-  "independent_review": {"reviewer": "independent-adversarial", "outcome": "approved", "evidence_path": "docs/WAVE-MVP-INDEPENDENT-REVIEW.md", "findings": "12/12 adversarial tests passed"},
-  "commit": "8a836f6",
-  "dirty_files": ["user-owned dirty files preserved; see git status at capture"],
-  "provider": "harness-orchestrated",
+  "status": "blocked",
+  "focused_pytest": {
+    "command": "uv run pytest tests/test_wave_mvp_gate_evidence.py tests/test_wave_contract_hardening.py tests/test_joint_wave_surface_mvp.py tests/test_wave_mvp_adversarial_review.py tests/test_wave_loop.py tests/test_joint_schema.py tests/test_factor_ir.py tests/test_particle_surface.py tests/test_wave_diagnostics.py tests/test_wave_authority.py tests/test_search.py tests/test_search_replay.py tests/test_candidate_generation.py -q",
+    "passed": true
+  },
+  "full_pytest": {
+    "command": "uv run pytest -q",
+    "passed": true
+  },
+  "code_intel": {
+    "command": "code-intel . --mode normal --json",
+    "outcome": "failed",
+    "publication_path": "C:/Users/Administrator/AppData/Local/code-intel/artifacts/aie-decision/1785871915797-57116-core",
+    "failure_detail": "doctor diagnosis: bootstrap readiness failed; manifest reconciliation failed. evidence.graph: repository inputs changed while the capability consumed them. evidence.sentrux: repository inputs do not match the expected snapshot identity. inventory.rg: repository inputs do not match the expected snapshot identity. Root cause: dirty working tree (deleted files, modified schemas, untracked files) prevents stable snapshot computation."
+  },
+  "sentrux": {
+    "command": "code-intel sentrux check . --json",
+    "rules_passed": true,
+    "ratchet_passed": false,
+    "baseline_path": ".sentrux/baseline.json",
+    "failure_detail": "baseline engine mismatch: .sentrux/baseline.json requires schema code-intel-sentrux-baseline.v4 with engine sentrux-native and numeric quality_signal/coupling_score/cycle_count/god_file_count metrics; found schema unknown engine unknown. Re-baseline intentionally with: code-intel sentrux --operation save_baseline --repo <repo>"
+  },
+  "independent_review": {
+    "reviewer": "independent-adversarial (ecc:code-reviewer + adversarial matrix)",
+    "outcome": "approved",
+    "evidence_path": "contracts/wave_mvp_adversarial_review_matrix.json",
+    "findings": [
+      "12/12 adversarial tests pass",
+      "No pytest.skip paths or no-op fallbacks in acceptance path",
+      "Authoritative evaluator path (wave_authority.py) with invocation provenance",
+      "Fail-closed gate evidence schema and validator with 29 tests"
+    ]
+  },
+  "commit": "da1e28b9e038d91fd2d15d3f80b9741a1be06111",
+  "dirty_files": [
+    "D agents/openai.yaml",
+    "D references/input-contract.md",
+    "D references/legacy-mode.md",
+    "M schemas/acceptance-executable-case.schema.json",
+    "M schemas/acceptance-interval-cohort.schema.json",
+    "M src/aie_decision/__init__.py",
+    "M tests/test_decomposition.py",
+    "?? docs/wave_mvp_gate_evidence.current.json",
+    "?? docs/WAVE-MVP-GATE-EVIDENCE.md"
+  ],
+  "provider": "deepseek",
   "model": "deepseek-v4-pro"
 }
