@@ -39,6 +39,19 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _session_env() -> dict[str, str]:
+    """Environment for lite session invocations.
+
+    CODE_INTEL_REPO_ROOT redirects the sentrux-shim.ps1 thin forwarder to
+    the repo-local tools/sentrux-shim/ directory, which contains the
+    cache-only lite-core that writes to .sentrux/cache/lite-baseline.json
+    instead of .sentrux/baseline.json.
+    """
+    env = os.environ.copy()
+    env["CODE_INTEL_REPO_ROOT"] = str(REPO_ROOT)
+    return env
+
+
 def _run_session_start(session_id: str) -> dict:
     proc = subprocess.run(
         [
@@ -48,6 +61,7 @@ def _run_session_start(session_id: str) -> dict:
             "-SessionId", session_id,
         ],
         capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=60,
+        env=_session_env(),
     )
     assert proc.stdout, f"session_start produced no stdout (exit {proc.returncode})"
     result = json.loads(proc.stdout)
@@ -64,6 +78,7 @@ def _run_session_end(session_id: str) -> dict:
             "-SessionId", session_id,
         ],
         capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=60,
+        env=_session_env(),
     )
     assert proc.stdout, f"session_end produced no stdout (exit {proc.returncode})"
     result = json.loads(proc.stdout)
@@ -215,6 +230,7 @@ def test_session_start_with_nonexistent_path_fails_nonzero():
             "-SessionId", "test-nonexistent",
         ],
         capture_output=True, text=True, timeout=30,
+        env=_session_env(),
     )
     assert proc.returncode != 0, (
         f"session_start on non-existent path should fail non-zero, "
