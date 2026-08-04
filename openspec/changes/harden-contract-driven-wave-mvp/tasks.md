@@ -1,7 +1,7 @@
 ## 1. Contract and evidence matrix
 
 - [x] 1.1 Add a machine-readable scenario matrix covering every requirement/scenario in `specs/contract-driven-wave-mvp/spec.md`, with test id, owner, input, expected business output, and failure semantics.
-- [ ] 1.2 Add a completion record schema/validator requiring focused tests, full pytest result, Code Intel result, Sentrux result, commit, and dirty-file declaration.
+- [x] 1.2 Add a completion record schema/validator requiring focused tests, full pytest result, Code Intel result, Sentrux result, commit, and dirty-file declaration.
 
 ## 2. Fail-closed acceptance
 
