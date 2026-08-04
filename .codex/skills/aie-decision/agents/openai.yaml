@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIE Decision"
+  short_description: "Run a replayable closed-loop Fermi candidate search"
+  default_prompt: "Use $aie-decision to turn my supplied quantitative variables into a bounded, replayable Fermi search."
