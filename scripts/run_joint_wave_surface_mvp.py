@@ -70,6 +70,40 @@ except Exception:  # noqa: BLE001
 
 
 SCHEMA_VERSION = "joint-wave-surface-mvp.v1"
+EVALUATOR_LABEL_ORACLE = "non_authoritative_oracle"
+EVALUATOR_LABEL_AUTHORITY = "authoritative"
+
+# ---------------------------------------------------------------------------
+# Lazy import of the authoritative package evaluator.  Import errors are
+# deferred until the authority path is actually requested so the oracle path
+# (which does not need the package) is never blocked by a missing dependency.
+# ---------------------------------------------------------------------------
+_AUTHORITY_MODULE: Any = None
+
+
+def _get_authority_module() -> Any:
+    """Return the cached authority module or raise on import failure."""
+    global _AUTHORITY_MODULE
+    if _AUTHORITY_MODULE is None:
+        from aie_decision.wave_authority import (  # type: ignore[import-not-found]
+            AUTHORITY_LABEL,
+            ORACLE_LABEL,
+            AuthoritativeWaveResult,
+            AuthorityError,
+            ParityMismatch as AuthParityMismatch,
+            assert_authoritative_parity,
+            run_authoritative_wave,
+        )
+        _AUTHORITY_MODULE = {
+            "label": AUTHORITY_LABEL,
+            "oracle_label": ORACLE_LABEL,
+            "result_type": AuthoritativeWaveResult,
+            "error_type": AuthorityError,
+            "parity_type": AuthParityMismatch,
+            "assert_parity": assert_authoritative_parity,
+            "run": run_authoritative_wave,
+        }
+    return _AUTHORITY_MODULE
 
 
 class IntegrationUnavailable(ValueError):
@@ -1389,6 +1423,21 @@ def run_mvp(payload: Mapping[str, Any]) -> LoopResult:
             "candidate_generation_available": True,
             "search_replay_available": True,
         },
+        "evaluator_label": EVALUATOR_LABEL_ORACLE,
+        "evaluator_path": "script",
+        "invocation_provenance": {
+            "evaluator": EVALUATOR_LABEL_ORACLE,
+            "evaluator_version": SCHEMA_VERSION,
+            "components_called": [
+                "script_schema",
+                "script_factor_ir",
+                "script_particle_surface",
+                "script_diagnostics",
+                "script_loop",
+                "script_ledger",
+                "script_replay",
+            ],
+        },
     }
 
     round_index = 1
@@ -1779,6 +1828,61 @@ def _run_replay(ledger_path: Path, fixture_path: Path | None = None) -> dict[str
     }
 
 
+def _run_authoritative(fixture: Path, output_dir: Path) -> int:
+    """Run through the authoritative package evaluator and write evidence."""
+    authority = _get_authority_module()
+    payload = _load_payload(fixture)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = authority["run"](payload)
+    except authority["error_type"] as exc:
+        print(json.dumps({"status": "authority_error", "error": str(exc)}))
+        return 2
+    ledger_path = output_dir / "wave-ledger.json"
+    summary_path = output_dir / "wave-summary.json"
+    provenance_path = output_dir / "wave-provenance.json"
+    result_dict = result.to_dict()
+    safe_result = _sanitize_for_json(result_dict)
+    safe_provenance = _sanitize_for_json(result.provenance.to_dict())
+    summary = {
+        "run_id": result.run_id,
+        "evaluator_label": authority["label"],
+        "evaluator_path": "package",
+        "authority_version": result.provenance.authority_version,
+        "all_components_called": result.provenance.all_components_called(),
+        "failed_components": list(result.provenance.failed_components()),
+        "component_count": len(result.provenance.components),
+        "actions": [a.get("action_kind", a.get("kind", "")) for a in result.actions],
+    }
+    safe_summary = _sanitize_for_json(summary)
+    summary_path.write_text(
+        json.dumps(safe_summary, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    ledger_path.write_text(
+        json.dumps(_sanitize_for_json(result.ledger), ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    provenance_path.write_text(
+        json.dumps(safe_provenance, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    status = "result-found" if result.decision_value.get("accepted") else "insufficient-information"
+    print(
+        json.dumps(
+            {
+                "status": status,
+                "evaluator": authority["label"],
+                "ledger": str(ledger_path),
+                "summary": str(summary_path),
+                "provenance": str(provenance_path),
+                "components_called": result.provenance.all_components_called(),
+            }
+        )
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1786,6 +1890,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser = subparsers.add_parser("run", help="Execute a golden fixture and write evidence")
     run_parser.add_argument("fixture", type=Path)
     run_parser.add_argument("--output-dir", type=Path, required=True)
+    run_parser.add_argument(
+        "--authority",
+        choices=("package", "oracle"),
+        default="oracle",
+        help=(
+            "Evaluator path: 'package' routes through the authoritative "
+            "package evaluator (aie_decision.wave_authority); 'oracle' uses "
+            "the non-authoritative script evaluator for backward compatibility."
+        ),
+    )
+
+    authority_parser = subparsers.add_parser(
+        "authority",
+        help="Run through the authoritative package evaluator explicitly",
+    )
+    authority_parser.add_argument("fixture", type=Path)
+    authority_parser.add_argument("--output-dir", type=Path, required=True)
 
     replay_parser = subparsers.add_parser("replay", help="Replay a saved ledger against its fixture")
     replay_parser.add_argument("ledger", type=Path)
@@ -1797,13 +1918,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    if args.command == "authority":
+        return _run_authoritative(args.fixture, args.output_dir)
     if args.command == "run":
+        if args.authority == "package":
+            return _run_authoritative(args.fixture, args.output_dir)
+        # Oracle path: existing script evaluator, explicitly labeled non-authoritative.
         payload = _load_payload(args.fixture)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         try:
             result = run_mvp(payload)
         except IntegrationUnavailable as exc:
-            print(json.dumps({"status": IntegrationUnavailable.code, "error": str(exc)}))
+            print(json.dumps({"status": IntegrationUnavailable.code, "error": str(exc), "evaluator": EVALUATOR_LABEL_ORACLE}))
             return 2
         ledger_path = args.output_dir / "wave-ledger.json"
         summary_path = args.output_dir / "wave-summary.json"
@@ -1822,6 +1948,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(
                 {
                     "status": result.status,
+                    "evaluator": EVALUATOR_LABEL_ORACLE,
                     "ledger": str(ledger_path),
                     "summary": str(summary_path),
                     "iterations": [iteration.round_index for iteration in result.iterations],
