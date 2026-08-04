@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aie-decision.local/schemas/wave-mvp-completion/v1/schema.json",
+  "title": "Wave MVP Completion v1",
+  "type": "object",
+  "required": ["schema_version", "change", "task_id", "owned_files", "focused_tests", "full_pytest", "code_intel", "sentrux", "commit", "dirty_files"],
+  "properties": {
+    "schema_version": {"const": "wave-mvp-completion.v1"},
+    "change": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "owned_files": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "focused_tests": {"type": "object", "required": ["command", "passed"], "properties": {"command": {"type": "string", "minLength": 1}, "passed": {"type": "boolean"}}, "additionalProperties": false},
+    "full_pytest": {"type": "object", "required": ["command", "passed"], "properties": {"command": {"type": "string", "minLength": 1}, "passed": {"type": "boolean"}}, "additionalProperties": false},
+    "code_intel": {"type": "object", "required": ["command", "outcome"], "properties": {"command": {"type": "string", "minLength": 1}, "outcome": {"type": "string", "enum": ["passed", "failed", "blocked"]}}, "additionalProperties": false},
+    "sentrux": {"type": "object", "required": ["command", "rules_passed", "ratchet_passed"], "properties": {"command": {"type": "string", "minLength": 1}, "rules_passed": {"type": "boolean"}, "ratchet_passed": {"type": "boolean"}}, "additionalProperties": false},
+    "commit": {"type": "string", "minLength": 7},
+    "dirty_files": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

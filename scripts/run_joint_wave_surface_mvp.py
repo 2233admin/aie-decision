@@ -42,11 +42,9 @@ from typing import Any
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Optional compatibility adapters for tasks A / B / C.
-# These imports are intentional: this task is forbidden from editing the
-# files of tasks A-C, but it consumes their stable public surface where
-# available.  When those modules are missing the adapters degrade to no-ops
-# rather than failing the MVP.
+# Required compatibility adapters for the MVP boundary.
+# These imports are intentionally kept read-only: the runner may not edit
+# tasks A-C, but a missing adapter is an integration failure, never a no-op.
 # ---------------------------------------------------------------------------
 try:  # pragma: no cover - exercised when the package is importable
     from aie_decision.candidate_generation import (  # type: ignore[import-not-found]
@@ -72,6 +70,63 @@ except Exception:  # noqa: BLE001
 
 
 SCHEMA_VERSION = "joint-wave-surface-mvp.v1"
+
+
+class IntegrationUnavailable(ValueError):
+    """Raised when a required MVP integration boundary cannot be used."""
+
+    code = "integration_unavailable"
+
+
+class ParityMismatch(ValueError):
+    """Raised when an explicitly supplied oracle disagrees with the evaluator."""
+
+    code = "parity_mismatch"
+
+
+def assert_surface_parity(
+    authoritative: Mapping[str, Any], oracle: Mapping[str, Any]
+) -> None:
+    """Compare externally observable surface/action evidence, fail closed on drift."""
+
+    fields = ("wave_shape", "bimodal_axes", "actions", "final_status")
+    mismatches = {
+        field: {"authoritative": authoritative.get(field), "oracle": oracle.get(field)}
+        for field in fields
+        if authoritative.get(field) != oracle.get(field)
+    }
+    if mismatches:
+        raise ParityMismatch(
+            "parity_mismatch: "
+            + json.dumps(mismatches, ensure_ascii=False, sort_keys=True)
+        )
+
+
+def _require_mvp_adapters(payload: Mapping[str, Any]) -> None:
+    """Fail closed when the fixture does not request or provide its adapters."""
+
+    compatibility = payload.get("compatibility")
+    if not isinstance(compatibility, Mapping):
+        raise IntegrationUnavailable(
+            "integration_unavailable: compatibility contract is required"
+        )
+    required = (
+        "use_candidate_generation_failure_diagnostic",
+        "use_search_replay_for_ledger_validation",
+    )
+    missing_flags = [name for name in required if compatibility.get(name) is not True]
+    missing_adapters = []
+    if not _HAS_CANDIDATE_GENERATION:
+        missing_adapters.append("candidate_generation")
+    if not _HAS_SEARCH_REPLAY:
+        missing_adapters.append("search_replay")
+    if missing_flags or missing_adapters:
+        details = []
+        if missing_flags:
+            details.append("flags=" + ",".join(missing_flags))
+        if missing_adapters:
+            details.append("adapters=" + ",".join(missing_adapters))
+        raise IntegrationUnavailable("integration_unavailable: " + "; ".join(details))
 
 # ---------------------------------------------------------------------------
 # Minimal dimensional analysis (Pint-style shim).
@@ -1149,6 +1204,7 @@ def _payload_hash(payload: Mapping[str, Any]) -> str:
 def run_mvp(payload: Mapping[str, Any]) -> LoopResult:
     if not isinstance(payload, Mapping):
         raise ValueError("fixture payload must be an object")
+    _require_mvp_adapters(payload)
     run_id = str(payload.get("run_id") or "wave-mvp-loop")
     outcome_spec = payload.get("outcome_space", {})
     axis_payload = outcome_spec.get("axes", ())
@@ -1232,8 +1288,8 @@ def run_mvp(payload: Mapping[str, Any]) -> LoopResult:
     max_seconds = float(budget.get("max_seconds", 5.0))
     decision_policy = dict(payload.get("decision_policy", {}))
     regime_split = payload.get("regime_split") or None
-    use_candidate = bool(payload.get("compatibility", {}).get("use_candidate_generation_failure_diagnostic", False))
-    use_replay = bool(payload.get("compatibility", {}).get("use_search_replay_for_ledger_validation", False))
+    use_candidate = True
+    use_replay = True
 
     started = time.monotonic()
     iterations: list[LoopIteration] = []
@@ -1328,10 +1384,10 @@ def run_mvp(payload: Mapping[str, Any]) -> LoopResult:
         "effective_sample_size": diagnostics.effective_sample_size,
         "illegal_mappings": list(illegal),
         "compatibility": {
-            "candidate_generation_adapter": use_candidate and _HAS_CANDIDATE_GENERATION,
-            "search_replay_adapter": use_replay and _HAS_SEARCH_REPLAY,
-            "candidate_generation_available": _HAS_CANDIDATE_GENERATION,
-            "search_replay_available": _HAS_SEARCH_REPLAY,
+            "candidate_generation_adapter": True,
+            "search_replay_adapter": True,
+            "candidate_generation_available": True,
+            "search_replay_available": True,
         },
     }
 
@@ -1365,15 +1421,13 @@ def run_mvp(payload: Mapping[str, Any]) -> LoopResult:
             action_mapping,
             round_index=round_index,
         )
-        # Optional compatibility adapter: build a FailureDiagnostic for
+        # Required compatibility adapter: build a FailureDiagnostic for
         # diagnostic-driven actions and feed it into the candidate
         # generation layer without modifying its files.  ``stop`` has no
         # diagnostic content; we still record the adapter invocation so
         # downstream tooling sees that the seam is wired.
         if (
-            use_candidate
-            and _HAS_CANDIDATE_GENERATION
-            and action.kind in {"add_interaction", "measure", "minimize", "split_regime", "stop"}
+            action.kind in {"add_interaction", "measure", "minimize", "split_regime", "stop"}
         ):
             reasons: list[str] = []
             if action.kind == "add_interaction":
@@ -1498,18 +1552,17 @@ def run_mvp(payload: Mapping[str, Any]) -> LoopResult:
         "run_id": run_id,
         "entries": ledger_events,
     }
-    # Optional compatibility adapter: project the wave ledger into the
+    # Required compatibility adapter: project the wave ledger into the
     # search-ledger schema and validate it via the unmodified replay module.
-    if use_replay and _HAS_SEARCH_REPLAY:
-        projected = _project_wave_ledger_to_search_schema(ledger_events, run_id)
-        projected = _sanitize_for_json(projected)
-        replay = _replay_search_ledger(projected)
-        summary["search_replay"] = {
-            "schema_version": _SEARCH_LEDGER_SCHEMA_VERSION,
-            "terminal_state": replay.get("terminal", {}).get("state"),
-            "event_count": replay.get("event_count"),
-            "available": True,
-        }
+    projected = _project_wave_ledger_to_search_schema(ledger_events, run_id)
+    projected = _sanitize_for_json(projected)
+    replay = _replay_search_ledger(projected)
+    summary["search_replay"] = {
+        "schema_version": _SEARCH_LEDGER_SCHEMA_VERSION,
+        "terminal_state": replay.get("terminal", {}).get("state"),
+        "event_count": replay.get("event_count"),
+        "available": True,
+    }
     summary["illegal_mappings"] = list(illegal)
     summary["final_status"] = status
     summary["iterations"] = [iteration.round_index for iteration in iterations]
@@ -1747,7 +1800,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "run":
         payload = _load_payload(args.fixture)
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        result = run_mvp(payload)
+        try:
+            result = run_mvp(payload)
+        except IntegrationUnavailable as exc:
+            print(json.dumps({"status": IntegrationUnavailable.code, "error": str(exc)}))
+            return 2
         ledger_path = args.output_dir / "wave-ledger.json"
         summary_path = args.output_dir / "wave-summary.json"
         safe_result = result.to_json_safe()

@@ -376,10 +376,9 @@ def test_ledger_entries_are_deterministically_sequenced(run_result):
 
 
 def test_compatibility_adapter_reports_search_replay_validation(run_result):
-    """When search-replay is importable, the runner must validate the projected ledger."""
+    """Search-replay is a required boundary and must validate the projected ledger."""
     runner_module = _load_runner()
-    if not getattr(runner_module, "_HAS_SEARCH_REPLAY", False):
-        pytest.skip("aie_decision.search_replay is not importable")
+    assert getattr(runner_module, "_HAS_SEARCH_REPLAY", False) is True
     summary = run_result[0].summary
     replay = summary.get("search_replay")
     assert replay is not None
@@ -388,10 +387,9 @@ def test_compatibility_adapter_reports_search_replay_validation(run_result):
 
 
 def test_compatibility_adapter_invokes_candidate_generation_diagnostic(run_result):
-    """The runner must surface a FailureDiagnostic preview without modifying candidate_generation."""
+    """Candidate generation is required and must receive the diagnostic preview."""
     runner_module = _load_runner()
-    if not getattr(runner_module, "_HAS_CANDIDATE_GENERATION", False):
-        pytest.skip("aie_decision.candidate_generation is not importable")
+    assert getattr(runner_module, "_HAS_CANDIDATE_GENERATION", False) is True
     preview = run_result[0].summary.get("candidate_generation_preview")
     assert preview is not None
     assert preview["available"] is True
@@ -438,7 +436,7 @@ def test_cli_run_writes_ledger_and_summary(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert completed.returncode in {0, 2}, completed.stderr
+    assert completed.returncode == 0, completed.stderr
     assert (output_dir / "wave-ledger.json").exists()
     assert (output_dir / "wave-summary.json").exists()
     ledger = json.loads((output_dir / "wave-ledger.json").read_text(encoding="utf-8"))
@@ -446,6 +444,14 @@ def test_cli_run_writes_ledger_and_summary(tmp_path):
     assert ledger["schema_version"].startswith("joint-wave-surface-mvp.v1")
     assert summary["wave_shape"] == "bimodal"
     assert summary["bimodal_axes"]
+    assert summary["final_status"] == "budget-exhausted"
+    assert summary["final_status"] != "converged"
+    assert summary["compatibility"] == {
+        "candidate_generation_adapter": True,
+        "candidate_generation_available": True,
+        "search_replay_adapter": True,
+        "search_replay_available": True,
+    }
 
 
 def test_cli_replay_validates_deterministic_replay(tmp_path):
@@ -468,7 +474,7 @@ def test_cli_replay_validates_deterministic_replay(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert completed.returncode in {0, 2}, completed.stderr
+    assert completed.returncode == 0, completed.stderr
     replay_completed = subprocess.run(
         [
             sys.executable,

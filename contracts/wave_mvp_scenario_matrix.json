@@ -1,0 +1,14 @@
+{
+  "schema_version": "wave-mvp-scenario-matrix.v1",
+  "capability": "contract-driven-wave-mvp",
+  "scenarios": [
+    {"id": "authoritative-cli-path", "test": "test_cli_run_writes_ledger_and_summary", "expected": "authoritative evaluator provenance and required adapters"},
+    {"id": "oracle-mismatch-fails", "test": "test_oracle_mismatch_is_not_accepted", "expected": "structured parity failure"},
+    {"id": "missing-adapter-fails", "test": "test_missing_required_adapter_fails_closed", "expected": "integration_unavailable"},
+    {"id": "illegal-unit-fails", "test": "test_illegal_mapping_failure_carries_offending_unit_and_operand", "expected": "unit_mismatch with mapping and operand units"},
+    {"id": "uncalibrated-is-possibility", "test": "test_surface_carries_possibility_semantics", "expected": "possibility_surface"},
+    {"id": "budget-is-unresolved", "test": "test_cli_run_writes_ledger_and_summary", "expected": "budget-exhausted is not converged"},
+    {"id": "replay-is-deterministic", "test": "test_cli_replay_validates_deterministic_replay", "expected": "identical ledger and successful replay"},
+    {"id": "completion-evidence-required", "test": "test_completion_record_requires_quality_evidence", "expected": "missing gate evidence is rejected"}
+  ]
+}
