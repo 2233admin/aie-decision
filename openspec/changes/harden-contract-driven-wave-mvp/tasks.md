@@ -11,12 +11,12 @@
 
 ## 3. Authoritative integration
 
-- [ ] 3.1 Route the golden CLI through the package evaluator or explicitly mark the current runner as a non-authoritative oracle; do not allow two unlabelled implementations.
-- [ ] 3.2 Add invocation provenance proving the authoritative schema, FactorIR, surface, diagnostics, loop, ledger, and replay boundaries were called.
-- [ ] 3.3 Add a cross-path parity test; mismatch must fail with a structured error.
+- [x] 3.1 Route the golden CLI through the package evaluator or explicitly mark the current runner as a non-authoritative oracle; do not allow two unlabelled implementations.
+- [x] 3.2 Add invocation provenance proving the authoritative schema, FactorIR, surface, diagnostics, loop, ledger, and replay boundaries were called.
+- [x] 3.3 Add a cross-path parity test; mismatch must fail with a structured error.
 
 ## 4. Quality gates and review
 
 - [ ] 4.1 Run focused and full pytest, OpenSpec strict validation, compiled Code Intel, and Sentrux rules/ratchet checks; record real failures.
-- [ ] 4.2 Review the diff for assertion weakening, skips, no-op fallbacks, duplicate evaluators, and unrelated dirty-file changes.
+- [x] 4.2 Review the diff for assertion weakening, skips, no-op fallbacks, duplicate evaluators, and unrelated dirty-file changes.
 - [ ] 4.3 Commit only the hardening change after all achievable gates pass; leave Code Intel baseline debt explicitly open.
