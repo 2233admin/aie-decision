@@ -833,8 +833,11 @@ def test_adversarial_no_duplicate_evaluator_capability():
     runner = _load_runner()
     try:
         wave_loop = _load_wave_loop()
-    except ImportError:
-        pytest.skip("wave_loop package not importable")
+    except ImportError as exc:
+        pytest.fail(
+            "wave_loop must be importable for the duplicate-evaluator audit; "
+            f"missing capability is a failure, not a skip: {exc}"
+        )
 
     # --- Capability inventory ---
     runner_capabilities = {

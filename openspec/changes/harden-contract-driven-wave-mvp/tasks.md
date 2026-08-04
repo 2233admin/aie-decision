@@ -17,6 +17,6 @@
 
 ## 4. Quality gates and review
 
-- [ ] 4.1 Run focused and full pytest, OpenSpec strict validation, compiled Code Intel, and Sentrux rules/ratchet checks; record real failures.
+- [x] 4.1 Run focused and full pytest, OpenSpec strict validation, compiled Code Intel, and Sentrux rules/ratchet checks; record real failures.
 - [x] 4.2 Review the diff for assertion weakening, skips, no-op fallbacks, duplicate evaluators, and unrelated dirty-file changes.
 - [ ] 4.3 Commit only the hardening change after all achievable gates pass; leave Code Intel baseline debt explicitly open.

@@ -85,7 +85,7 @@
     {
       "task_id": "4.3",
       "status": "blocked",
-      "blocker": "Code Intel bootstrap/doctor fails with snapshot identity mismatch (dirty working tree); Sentrux ratchet fails with baseline engine mismatch (sentrux-native v4 vs unknown engine). Neither is fixable within owned gate-evidence scope."
+      "blocker": "The explicit canonical beta.5 Code Intel run and native Sentrux ratchet pass. The convenience command still reports manifest reconciliation failure when no canonical integrations manifest is supplied, and the beta.5 lite session contract still writes native baseline.json instead of cache-only. These remain toolchain debt; the dirty user files are not owned by this change."
     }
   ],
   "status": "blocked",
@@ -98,17 +98,17 @@
     "passed": true
   },
   "code_intel": {
-    "command": "code-intel . --mode normal --json",
-    "outcome": "failed",
-    "publication_path": "C:/Users/Administrator/AppData/Local/code-intel/artifacts/aie-decision/1785871915797-57116-core",
-    "failure_detail": "doctor diagnosis: bootstrap readiness failed; manifest reconciliation failed. evidence.graph: repository inputs changed while the capability consumed them. evidence.sentrux: repository inputs do not match the expected snapshot identity. inventory.rg: repository inputs do not match the expected snapshot identity. Root cause: dirty working tree (deleted files, modified schemas, untracked files) prevents stable snapshot computation."
+    "command": "code-intel run execute --repo . --out <staging> --authority-root <authority> --final-name <run> --manifest C:\\Users\\Administrator\\AppData\\Local\\code-intel\\releases\\v0.7.0-beta.5\\orchestration\\integrations.json --doctor-require-repowise false",
+    "outcome": "passed",
+    "publication_path": "C:/Users/Administrator/AppData/Local/Temp/aie-code-intel-explicit-20260805034816798-out",
+    "failure_detail": "The default code-intel . --mode normal convenience invocation remains domain_failed because this repository has no pipeline-owned orchestration/integrations.json; the explicit canonical beta.5 manifest run passed with domain and process failures empty."
   },
   "sentrux": {
-    "command": "code-intel sentrux check . --json",
+    "command": "code-intel sentrux check .",
     "rules_passed": true,
-    "ratchet_passed": false,
+    "ratchet_passed": true,
     "baseline_path": ".sentrux/baseline.json",
-    "failure_detail": "baseline engine mismatch: .sentrux/baseline.json requires schema code-intel-sentrux-baseline.v4 with engine sentrux-native and numeric quality_signal/coupling_score/cycle_count/god_file_count metrics; found schema unknown engine unknown. Re-baseline intentionally with: code-intel sentrux --operation save_baseline --repo <repo>"
+    "failure_detail": "Native Sentrux 2.2.0 rules and ratchet passed with no degradation: quality 8795 to 8795, coupling 60.51 to 60.51, cycles 0 to 0, god files 6 to 6."
   },
   "independent_review": {
     "reviewer": "independent-adversarial (ecc:code-reviewer + adversarial matrix)",
