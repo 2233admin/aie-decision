@@ -8,9 +8,9 @@
 ## Summary
 
 Ran 12 adversarial tests against the contract-driven wave MVP implementation.
-**11 passed, 1 failed honestly** — the cross-path parity test (Task 3.3) fails
-because the two evaluator implementations produce different results for
-equivalent inputs.
+**Historical first pass: 11 passed, 1 failed honestly.** The parity failure was
+fixed in `0020bb8` without changing the reviewer tests. The latest independent
+rerun is **12/12 passed** against the current branch head.
 
 ## Test Results
 
@@ -19,7 +19,7 @@ equivalent inputs.
 | 1 | Illegal unit structured failure | PASSED | All required fields present, non-empty, genuine mismatch |
 | 2 | Missing adapter fails independently | PASSED | Each adapter boundary testable independently; error names specific adapter |
 | 3 | Provenance invocation (not just declaration) | PASSED | `_replay_search_ledger` is actually called during `run_mvp` |
-| 4 | Cross-path parity (package vs runner) | **FAILED** | Two evaluators disagree on action kinds, terminal status (see below) |
+| 4 | Cross-path parity (package vs runner) | **PASSED (latest rerun)** | `0020bb8` aligns mode detection; mismatch remains fail-closed |
 | 5 | No uncalibrated surface as probability | PASSED | All surfaces labeled `possibility_surface`; `calibration=unmeasured` |
 | 6 | Budget exhaustion is not converged | PASSED | Unimodal input correctly yields `insufficient-information` or `budget-exhausted` |
 | 7 | Action order determinism | PASSED | Same seed → identical results; different seeds → different output |
@@ -45,12 +45,13 @@ tolerances from `decision_policy.axes[]`, while wave_loop uses a global
 `relative_tolerance` and `min_effective_sample_size` from `decision_policy`.
 
 The spec (Task 3.3) requires: "Add a cross-path parity test; mismatch must fail
-with a structured error." The test `test_adversarial_cross_path_parity_package_vs_runner`
-fulfills this requirement — it fails honestly with a structured JSON mismatch report.
+with a structured error." The test first failed with a structured JSON mismatch
+report, then passed after `0020bb8` aligned the runner mode detector with the
+package histogram algorithm. The mismatch assertion remains fail-closed.
 
 ## Additional Findings (Task 4.2 Review)
 
-### Pre-existing CLI breakage
+### Historical pre-fix CLI breakage
 The CLI tests (`test_cli_run_writes_ledger_and_summary`, `test_cli_replay_validates_deterministic_replay`)
 fail because `_run_authoritative` in the runner delegates to `wave_authority.run_authoritative_wave()`,
 which expects `outcome_space` as a sequence but the fixture provides it as a dict with an `axes` key.
@@ -82,6 +83,12 @@ for fail-closed semantics.
 - `tests/test_wave_mvp_adversarial_review.py` — 12 tests (11 pass, 1 honest fail)
 - `docs/WAVE-MVP-INDEPENDENT-REVIEW.md` — this document
 
-## No Implementation Changes
+## No Reviewer Implementation Changes
 Per the task instructions, no implementation files, runner source, package modules,
-or existing tests were modified.
+or existing tests were modified by this reviewer.
+
+## Latest independent rerun
+
+- Adversarial review: **12/12 passed**
+- Existing wave tests: **65 passed**
+- Provider/model: `deepseek-v4-pro` via Claude Code harness

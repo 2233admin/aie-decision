@@ -76,18 +76,24 @@ result = validate_gate_evidence(record)
 - CLI integration (file I/O, JSON parsing, exit codes)
 - Invariant tests (no disk writes, real failures preserved, ratchet failure explicit)
 
-## Current Gate Status (2026-08-05)
+## Current Gate Status (2026-08-05, latest capture)
 
 | Gate | Result |
 |---|---|
-| Focused tests (29/29) | **passed** |
-| Full pytest (421 passed, 2 pre-existing failures) | **fail** (pre-existing; `wave_authority.py` TypeError — not owned) |
-| Code Intel | **failed** (bootstrap readiness failed; manifest reconciliation failed; repository inputs do not match expected snapshot identity) |
+| Focused tests (79/79) | **passed** |
+| Full pytest (449 passed) | **passed** |
+| OpenSpec strict validation | **passed** |
+| Code Intel | **failed** (`domain_failed`, architecture gate failure) |
 | Sentrux rules | **passed** (architecture rules pass) |
-| Sentrux ratchet | **fail** (baseline incompatible with new wave architecture layers) |
-| Independent review | **approved** (no assertion weakening, no skip paths introduced) |
+| Sentrux ratchet | **fail** (baseline schema/engine incompatible with current `sentrux-native` gate) |
+| Independent review | **approved** (`12/12` adversarial tests; no assertion weakening or skip paths) |
 
-The overall gate status is **fail** — the Sentrux ratchet baseline mismatch and the pre-existing `wave_authority.py` failures are real blockers that must not be hidden.
+The overall gate status is **fail** — the Code Intel architecture gate and Sentrux
+ratchet mismatch are real blockers. No baseline was regenerated to hide them.
+
+The machine-readable current capture is
+`docs/wave_mvp_gate_evidence.current.json` and validates with the fail-closed
+validator.
 
 ## Owned files
 

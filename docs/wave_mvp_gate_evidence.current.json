@@ -1,0 +1,22 @@
+{
+  "schema_version": "wave-mvp-gate-evidence.v1",
+  "gate_id": "2026-08-05-wave-mvp-latest",
+  "status": "blocked",
+  "openspec_tasks": [
+    {"task_id": "3.1", "status": "verified", "owned_files": ["scripts/run_joint_wave_surface_mvp.py", "src/aie_decision/wave_authority.py"]},
+    {"task_id": "3.2", "status": "verified", "owned_files": ["src/aie_decision/wave_authority.py"]},
+    {"task_id": "3.3", "status": "verified", "owned_files": ["tests/test_wave_mvp_adversarial_review.py"]},
+    {"task_id": "4.1", "status": "blocked", "blocker": "Code Intel domain_failed and Sentrux ratchet baseline mismatch"},
+    {"task_id": "4.2", "status": "verified", "owned_files": ["docs/WAVE-MVP-INDEPENDENT-REVIEW.md"]},
+    {"task_id": "4.3", "status": "blocked", "blocker": "Required Code Intel and Sentrux quality gates are not green"}
+  ],
+  "focused_pytest": {"command": ".\\.venv\\Scripts\\python.exe -m pytest -q tests/test_wave_mvp_adversarial_review.py tests/test_wave_authority.py tests/test_joint_wave_surface_mvp.py tests/test_wave_contract_hardening.py tests/test_wave_mvp_gate_evidence.py", "passed": true},
+  "full_pytest": {"command": ".\\.venv\\Scripts\\python.exe -m pytest -q", "passed": true},
+  "code_intel": {"command": "code-intel . --mode normal --json", "outcome": "failed", "publication_path": "C:\\Users\\Administrator\\AppData\\Local\\code-intel\\artifacts\\aie-decision\\1785870980628-24308-core", "failure_detail": "domain_failed: architecture gate failure at diagnosis.hospital"},
+  "sentrux": {"command": "code-intel sentrux check .", "rules_passed": true, "ratchet_passed": false, "baseline_path": ".sentrux/baseline.json", "failure_detail": "baseline engine/schema mismatch: expected sentrux-native/code-intel-sentrux-baseline.v4"},
+  "independent_review": {"reviewer": "independent-adversarial", "outcome": "approved", "evidence_path": "docs/WAVE-MVP-INDEPENDENT-REVIEW.md", "findings": "12/12 adversarial tests passed"},
+  "commit": "8a836f6",
+  "dirty_files": ["user-owned dirty files preserved; see git status at capture"],
+  "provider": "harness-orchestrated",
+  "model": "deepseek-v4-pro"
+}
