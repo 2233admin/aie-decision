@@ -60,6 +60,21 @@ def test_completion_record_requires_quality_evidence():
     with pytest.raises(ValueError, match="completion_evidence_missing"):
         module.validate_completion({"schema_version": "wave-mvp-completion.v1"})
 
+    module.validate_completion(
+        {
+            "schema_version": "wave-mvp-completion.v1",
+            "change": "harden-contract-driven-wave-mvp",
+            "task_id": "2.1",
+            "owned_files": ["tests/test_joint_wave_surface_mvp.py"],
+            "focused_tests": {"command": "uv run pytest tests/test_joint_wave_surface_mvp.py", "passed": True},
+            "full_pytest": {"command": "uv run pytest -q", "passed": True},
+            "code_intel": {"command": "code-intel . --mode normal --json", "outcome": "failed"},
+            "sentrux": {"command": "code-intel sentrux check .", "rules_passed": True, "ratchet_passed": False},
+            "commit": "592d200",
+            "dirty_files": ["schemas/acceptance-executable-case.schema.json"]
+        }
+    )
+
 
 def test_acceptance_source_has_no_skip_or_noop_degradation():
     runner_source = RUNNER.read_text(encoding="utf-8")
