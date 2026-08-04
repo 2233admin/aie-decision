@@ -333,6 +333,18 @@ def _build_parser() -> argparse.ArgumentParser:
     add_common(replay)
     replay.add_argument("--session", dest="session_path", required=True, help="path to an existing session document")
 
+    search = commands.add_parser(
+        "search-fermi",
+        help="run the experimental closed-loop Fermi candidate search",
+    )
+    add_common(search)
+    search.add_argument("input", help="JSON search request path; '-' for stdin")
+    search.add_argument(
+        "--experimental",
+        action="store_true",
+        help="acknowledge that ranking and intervals are provisional and uncalibrated",
+    )
+
     return parser
 
 
@@ -519,6 +531,17 @@ def _do_replay(args: argparse.Namespace) -> int:
     return 0 if verdict["verdict"] == "match" else 2
 
 
+def _do_search_fermi(args: argparse.Namespace) -> int:
+    if not args.experimental:
+        raise ValueError("search-fermi requires --experimental")
+    # Keep the base agent protocol independent from the optional search
+    # engine until this experimental command is actually invoked.
+    search_module = __import__("aie_decision.search", fromlist=["search_fermi"])
+    result = search_module.search_fermi(_read_input(args.input))
+    _output(result, args.output if not args.pretty else "-")
+    return 0 if result.get("status") == "result-found" else 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -535,6 +558,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _do_finalize(args)
         if args.command == "replay":
             return _do_replay(args)
+        if args.command == "search-fermi":
+            return _do_search_fermi(args)
         parser.error(f"unsupported command: {args.command}")
     except (ValueError, TypeError, OSError, json.JSONDecodeError) as exc:
         # Errors are surfaced on BOTH stdout and stderr as a single JSON

@@ -1,0 +1,33 @@
+{
+  "run_id": "mvp-loop-example",
+  "question": "How many daily buyers?",
+  "target": "daily_buyers",
+  "unit": "buyers/day",
+  "coverage": 0.9,
+  "reference_value": 100,
+  "acceptable_width": 40,
+  "variables": [
+    {"name": "rough_total", "lower": 0, "upper": 1000, "method": "assumed"},
+    {"name": "population", "lower": 950, "upper": 1050, "method": "observed"},
+    {"name": "participation_rate", "lower": 0.09, "upper": 0.11, "method": "observed"},
+    {"name": "adjustment", "lower": 0, "upper": 0, "method": "assumed", "ablatable": true}
+  ],
+  "candidates": [
+    {"candidate_id": "rough", "formula": "rough_total", "mutation_kind": "seed"}
+  ],
+  "mutation_templates": [
+    {
+      "template_id": "replace-rough-estimate",
+      "formula_template": "population * participation_rate + adjustment",
+      "diagnostic_reasons": ["interval_too_wide"],
+      "mutation_kind": "revise",
+      "prior_multiplier": 0.8
+    }
+  ],
+  "budget": {
+    "max_candidates": 10,
+    "max_rounds": 5,
+    "max_evaluations": 10,
+    "max_seconds": 5
+  }
+}
