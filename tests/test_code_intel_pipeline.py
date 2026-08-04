@@ -1,8 +1,11 @@
-"""Black-box tests for code-intel pipeline integration (OpenSpec 1.7).
+"""Black-box gate evidence for code-intel pipeline (OpenSpec 1.7).
 
-These tests verify that ``code-intel . --mode normal --json`` passes with
-exit code 0, no domain failures, and no process failures, using only
-canonical Code Intel beta.5 supported discovery mechanisms.
+These tests probe the ambient ``code-intel . --mode normal --json`` command
+WITHOUT any environment injection (no CODE_INTEL_INTEGRATIONS_MANIFEST,
+no CODE_INTEL_HOME, no PATH manipulation).  They record the honest outcome
+as gate evidence — a passing gate requires the ambient command to succeed;
+a blocked gate is reported as a test failure, never hidden behind skip/xfail
+or env-injected passes.
 
 Requirements derived from:
   openspec/changes/add-joint-wave-surface-mapping/tasks.md (task 1.7)
@@ -15,46 +18,33 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Canonical beta.5 release directory containing the orchestration manifest
-# and pipeline source tree that doctor bootstrap and orchestrate Validate
-# check entrypoints against.
-_BETA5_RELEASE = (
-    Path(os.environ.get("LOCALAPPDATA", ""))
-    / "code-intel"
-    / "releases"
-    / "v0.7.0-beta.5"
-)
-_MANIFEST_PATH = _BETA5_RELEASE / "orchestration" / "integrations.json"
 
-# The global CODE_INTEL_HOME env var on this host points to a non-existent
-# development directory.  When set *and* the directory is absent, doctor
-# bootstrap fails closed.  The test unsets it so the default derivation
-# (<pipeline_root>) is used instead.
-_STALE_CODE_INTEL_HOME = os.environ.get("CODE_INTEL_HOME", "")
+def _ambient_env() -> dict[str, str]:
+    """Return the host environment with NO code-intel overrides injected.
 
-
-def _code_intel_env() -> dict[str, str]:
-    """Return a clean environment for code-intel default-mode invocation."""
+    This is the critical invariant: the test must use exactly what a fresh
+    PowerShell session would see, with no CODE_INTEL_INTEGRATIONS_MANIFEST,
+    CODE_INTEL_HOME unset, and no PATH augmentation.  If the pipeline cannot
+    resolve its manifest from the ambient environment alone, 1.7 is blocked.
+    """
     env = os.environ.copy()
-    env["CODE_INTEL_INTEGRATIONS_MANIFEST"] = str(_MANIFEST_PATH)
-    # Unset the stale CODE_INTEL_HOME so doctor bootstrap does not reject
-    # it as a missing directory.
-    env.pop("CODE_INTEL_HOME", None)
+    # Remove any code-intel-specific env vars that might have leaked in.
+    for key in list(env.keys()):
+        if key.startswith("CODE_INTEL_"):
+            env.pop(key, None)
     return env
 
 
 def _run_pipeline() -> subprocess.CompletedProcess:
-    """Run the default pipeline and return the completed process."""
+    """Run the default pipeline with ambient environment and no injections."""
     return subprocess.run(
         ["code-intel", ".", "--mode", "normal", "--json"],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
-        env=_code_intel_env(),
+        env=_ambient_env(),
         timeout=120,
     )
 
@@ -65,131 +55,137 @@ def _parse_result(proc: subprocess.CompletedProcess) -> dict:
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        pytest.fail(f"pipeline stdout is not valid JSON: {exc}\n{proc.stdout}")
+        raise AssertionError(
+            f"pipeline stdout is not valid JSON: {exc}\n{proc.stdout}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
-# Positive: the default command passes
+# Gate evidence: the ambient command and its honest outcome
 # ---------------------------------------------------------------------------
 
 
-def test_pipeline_default_mode_passes():
-    """``code-intel . --mode normal --json`` exits 0 with no failures.
+def test_ambient_pipeline_reports_domain_failed():
+    """``code-intel . --mode normal --json`` with NO env injection exits 10.
 
-    Requirement (OpenSpec 1.7):
-      The default pipeline command MUST complete with outcome "completed",
-      exit code 0, and both ``failures.domain`` and ``failures.process``
-      empty.  A ``domain_failed`` or ``process_failed`` outcome with a
-      non-null diagnostic is a gate failure.
+    OpenSpec 1.7 mandatory conformance case:
+      The default pipeline command, invoked from a fresh shell with no
+      environment overrides, MUST complete with outcome "completed" and
+      exit code 0.
+
+    Current status (2026-08-05): **BLOCKED** — canonical beta.5 resolves
+    the pipeline root to ``bin/`` instead of the release directory, causing
+    ``manifest reconciliation failed``.  The exit code is 10, outcome is
+    ``domain_failed``.
+
+    This test is a fail-closed probe: it asserts the actual ambient behavior
+    and FAILS when the gate is not met.  Do NOT hide the failure behind
+    skip/xfail/env-injection — the failure IS the gate evidence.
     """
     proc = _run_pipeline()
     result = _parse_result(proc)
+
+    # === Mandatory conformance assertions ===
+    # These assert what MUST be true for 1.7 to pass.  They currently FAIL
+    # because canonical beta.5 cannot resolve its manifest from the ambient
+    # environment without CODE_INTEL_INTEGRATIONS_MANIFEST.
 
     assert proc.returncode == 0, (
-        f"expected exit 0, got {proc.returncode}\n"
-        f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
+        f"BLOCKED: expected exit 0, got {proc.returncode}\n"
+        f"  Diagnostic: {result.get('diagnostic', 'none')}\n"
+        f"  Failure node: {result.get('failureNode', 'none')}\n"
+        f"  stderr: {proc.stderr}"
     )
     assert result["outcome"] == "completed", (
-        f"expected outcome 'completed', got {result['outcome']!r}\n"
-        f"diagnostic: {result.get('diagnostic')}"
-    )
-    assert result["failureNode"] is None, (
-        f"unexpected failure node: {result['failureNode']}"
+        f"BLOCKED: expected outcome 'completed', got {result['outcome']!r}\n"
+        f"  Diagnostic: {result.get('diagnostic', 'none')}"
     )
     assert result["failures"]["domain"] == [], (
-        f"domain failures: {result['failures']['domain']}"
+        f"BLOCKED: domain failures present: {result['failures']['domain']}"
     )
     assert result["failures"]["process"] == [], (
-        f"process failures: {result['failures']['process']}"
+        f"BLOCKED: process failures present: {result['failures']['process']}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Negative / adversarial: without the manifest env var the pipeline MUST
-# fail closed, not silently report success.
-# ---------------------------------------------------------------------------
+def test_ambient_pipeline_diagnostic_confirms_blocked():
+    """The ambient failure diagnostic confirms the pipeline is blocked.
 
+    Canonical beta.5 cannot resolve the correct manifest from the ambient
+    environment.  The diagnostic varies depending on repo state but always
+    includes either ``manifest reconciliation failed`` or ``architecture
+    gate failure`` — both pointing to manifest/pipeline root resolution.
 
-def test_pipeline_without_manifest_env_var_fails_closed():
-    """Without CODE_INTEL_INTEGRATIONS_MANIFEST, the pipeline must fail.
-
-    The fallback discovery (ancestor walk from the exe parent) resolves the
-    pipeline root to ``bin/``, which does not contain the source files the
-    doctor and orchestrate Validate expect.  The pipeline MUST report a
-    failure — never a silent "completed".
-
-    Adversarial case derived from the OpenSpec requirement that missing or
-    misconfigured tooling must fail closed.
+    This test documents the specific root cause so future resolution can
+    target the correct mechanism.
     """
-    env = os.environ.copy()
-    env.pop("CODE_INTEL_HOME", None)
-    # Deliberately omit CODE_INTEL_INTEGRATIONS_MANIFEST.
-    proc = subprocess.run(
-        ["code-intel", ".", "--mode", "normal", "--json"],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
-        env=env,
-        timeout=120,
-    )
-    result = _parse_result(proc)
-
-    assert proc.returncode != 0, (
-        f"expected non-zero exit without manifest env var, got {proc.returncode}"
-    )
-    assert result["outcome"] != "completed", (
-        f"expected non-completed outcome without manifest env var, "
-        f"got {result['outcome']!r}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Stale CODE_INTEL_HOME must also fail closed
-# ---------------------------------------------------------------------------
-
-
-def test_pipeline_with_stale_code_intel_home_fails_closed():
-    """When CODE_INTEL_HOME points to a non-existent directory, the doctor
-    bootstrap MUST report it as missing and fail the run."""
-    if not _STALE_CODE_INTEL_HOME:
-        pytest.skip("CODE_INTEL_HOME is not set — nothing to test")
-    env = os.environ.copy()
-    env["CODE_INTEL_INTEGRATIONS_MANIFEST"] = str(_MANIFEST_PATH)
-    # Keep the stale CODE_INTEL_HOME (do NOT pop it).
-    proc = subprocess.run(
-        ["code-intel", ".", "--mode", "normal", "--json"],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
-        env=env,
-        timeout=120,
-    )
-    result = _parse_result(proc)
-
-    assert proc.returncode != 0, (
-        f"expected non-zero exit with stale CODE_INTEL_HOME, got {proc.returncode}"
-    )
-    assert result["outcome"] != "completed", (
-        f"expected non-completed outcome with stale CODE_INTEL_HOME, "
-        f"got {result['outcome']!r}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Artifact publication exists and is non-empty
-# ---------------------------------------------------------------------------
-
-
-def test_pipeline_publication_marker_exists():
-    """A successful run publishes a run-complete.json marker."""
     proc = _run_pipeline()
     result = _parse_result(proc)
-    if result["outcome"] != "completed":
-        pytest.skip("pipeline did not complete — publication skipped")
 
-    marker = Path(result["publication"]["marker"])
-    assert marker.is_file(), f"publication marker not found: {marker}"
-    raw = marker.read_bytes()
-    assert raw, f"publication marker is empty: {marker}"
-    # The marker must itself be valid JSON.
-    json.loads(raw)
+    diagnostic = result.get("diagnostic", "")
+    valid_diagnostics = [
+        "manifest reconciliation failed",
+        "architecture gate failure",
+        "bootstrap readiness failed",
+    ]
+    matched = any(d in diagnostic for d in valid_diagnostics)
+    assert matched, (
+        f"Expected one of {valid_diagnostics} in diagnostic, "
+        f"got: {diagnostic!r}"
+    )
+    assert result["failureNode"] is not None, (
+        "Expected a non-null failureNode for blocked pipeline"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Honest gate evidence: the explicit orchestrate command (no env injection)
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_orchestrate_manifest_command_passes():
+    """``code-intel orchestrate --manifest <release>/integrations.json`` passes.
+
+    The ``orchestrate`` subcommand accepts ``--manifest`` as an explicit
+    CLI flag (no env var needed).  This is the canonical explicit invocation
+    and serves as evidence that the toolchain itself is functional — the
+    blockage is in the default-mode manifest resolution, not in the engine.
+
+    This test does NOT prove 1.7; it proves the toolchain is healthy when
+    pointed at the correct manifest explicitly.
+    """
+    release_manifest = (
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "code-intel"
+        / "releases"
+        / "v0.7.0-beta.5"
+        / "orchestration"
+        / "integrations.json"
+    )
+    if not release_manifest.is_file():
+        raise AssertionError(
+            f"Canonical release manifest not found at {release_manifest}"
+        )
+
+    proc = subprocess.run(
+        [
+            "code-intel", "orchestrate",
+            "--repo", ".",
+            "--mode", "normal",
+            "--manifest", str(release_manifest),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_ambient_env(),
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        f"orchestrate with explicit manifest failed: exit {proc.returncode}\n"
+        f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
+    )
+    result = json.loads(proc.stdout)
+    assert result.get("ok") is True, (
+        f"orchestrate returned ok=false: {json.dumps(result, indent=2)}"
+    )

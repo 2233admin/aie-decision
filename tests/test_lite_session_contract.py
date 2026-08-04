@@ -1,8 +1,11 @@
-"""Black-box tests for lite session cache-only contract (OpenSpec 1.6).
+"""Black-box gate evidence for lite session cache-only contract (OpenSpec 1.6).
 
-These tests verify that ``session_start`` / ``session_end`` write ONLY to
-``.sentrux/cache/lite-baseline.json`` and session evidence, and NEVER
-alter the native baseline bytes or SHA-256.
+These tests probe the canonical beta.5 session tools WITHOUT any
+CODE_INTEL_REPO_ROOT injection, no tools/sentrux-shim/ override, and
+no environment manipulation.  They record the honest outcome as gate
+evidence — a passing gate requires lite sessions to write only to
+``.sentrux/cache/lite-baseline.json`` without altering the native baseline;
+a blocked gate is reported as a test failure, never hidden behind skip/xfail.
 
 Requirements derived from:
   openspec/changes/add-joint-wave-surface-mapping/tasks.md (task 1.6)
@@ -16,13 +19,9 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SENTRUX_DIR = REPO_ROOT / ".sentrux"
 NATIVE_BASELINE = SENTRUX_DIR / "baseline.json"
-CACHE_DIR = SENTRUX_DIR / "cache"
-LITE_BASELINE = CACHE_DIR / "lite-baseline.json"
 SESSION_DIR = SENTRUX_DIR / "agent-sessions"
 
 _BETA5_LEGACY = (
@@ -39,16 +38,16 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _session_env() -> dict[str, str]:
-    """Environment for lite session invocations.
+def _ambient_env() -> dict[str, str]:
+    """Return the host environment with NO sentrux/code-intel overrides.
 
-    CODE_INTEL_REPO_ROOT redirects the sentrux-shim.ps1 thin forwarder to
-    the repo-local tools/sentrux-shim/ directory, which contains the
-    cache-only lite-core that writes to .sentrux/cache/lite-baseline.json
-    instead of .sentrux/baseline.json.
+    No CODE_INTEL_REPO_ROOT, no CODE_INTEL_INTEGRATIONS_MANIFEST,
+    no CODE_INTEL_HOME.  This is what a fresh PowerShell session sees.
     """
     env = os.environ.copy()
-    env["CODE_INTEL_REPO_ROOT"] = str(REPO_ROOT)
+    for key in list(env.keys()):
+        if key.startswith("CODE_INTEL_"):
+            env.pop(key, None)
     return env
 
 
@@ -61,7 +60,7 @@ def _run_session_start(session_id: str) -> dict:
             "-SessionId", session_id,
         ],
         capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=60,
-        env=_session_env(),
+        env=_ambient_env(),
     )
     assert proc.stdout, f"session_start produced no stdout (exit {proc.returncode})"
     result = json.loads(proc.stdout)
@@ -78,7 +77,7 @@ def _run_session_end(session_id: str) -> dict:
             "-SessionId", session_id,
         ],
         capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=60,
-        env=_session_env(),
+        env=_ambient_env(),
     )
     assert proc.stdout, f"session_end produced no stdout (exit {proc.returncode})"
     result = json.loads(proc.stdout)
@@ -98,7 +97,7 @@ def _cleanup_session(session_id: str) -> None:
 
 
 def test_prerequisites():
-    """Verify the canonical toolchain files exist before any session test."""
+    """Verify the canonical toolchain files and native baseline exist."""
     assert _AGENT_TOOL.is_file(), (
         f"Invoke-SentruxAgentTool.ps1 not found at {_AGENT_TOOL}"
     )
@@ -107,67 +106,84 @@ def test_prerequisites():
     )
 
 
-# ---------------------------------------------------------------------------
-# Core contract: native baseline MUST NOT be altered
-# ---------------------------------------------------------------------------
-
-
-def test_session_start_does_not_alter_native_baseline_hash():
-    """session_start MUST leave the native baseline bytes unchanged.
-
-    Requirement (OpenSpec 1.6):
-      The lite session cache-only contract requires session_start to write
-      only to ``.sentrux/cache/lite-baseline.json`` and session evidence,
-      and NEVER alter the native baseline bytes or SHA-256.
-    """
+def test_native_baseline_schema_is_v4():
+    """The native baseline MUST have schema code-intel-sentrux-baseline.v4."""
     baseline_data = json.loads(NATIVE_BASELINE.read_text())
     assert baseline_data.get("schema") == "code-intel-sentrux-baseline.v4", (
-        f"native baseline pre-condition: expected v4 schema, "
+        f"Native baseline schema mismatch: expected v4, "
         f"got {baseline_data.get('schema')}"
     )
-    assert baseline_data.get("engine", {}).get("id") == "sentrux-native", (
-        "native baseline pre-condition: expected sentrux-native engine"
+    engine = baseline_data.get("engine", {})
+    assert engine.get("id") == "sentrux-native", (
+        f"Native baseline engine mismatch: expected sentrux-native, "
+        f"got {engine.get('id')}"
     )
 
+
+# ---------------------------------------------------------------------------
+# Gate evidence: session_start alters the native baseline
+# ---------------------------------------------------------------------------
+
+
+def test_session_start_overwrites_native_baseline():
+    """session_start overwrites the native baseline — 1.6 is BLOCKED.
+
+    OpenSpec 1.6 mandatory conformance case:
+      A lite session MUST write only to ``.sentrux/cache/lite-baseline.json``
+      and MUST NOT alter the native baseline bytes or SHA-256.
+
+    Current status (2026-08-05): **BLOCKED** — canonical beta.5
+    ``Invoke-SentruxAgentTool.ps1`` calls ``sentrux gate --save`` which
+    hard-codes ``.sentrux/baseline.json`` as the output path.  No repo-level
+    extension surface exists to redirect this write.  The test below
+    demonstrates the violation by running session_start and observing the
+    native baseline change.
+
+    This test is a fail-closed probe: it asserts the contract and FAILS
+    when the contract is violated.  Do NOT hide the failure — the failure
+    IS the gate evidence for the upstream blocker.
+    """
+    # Record the native baseline identity BEFORE session_start.
     hash_before = _sha256(NATIVE_BASELINE)
     bytes_before = NATIVE_BASELINE.read_bytes()
 
-    for pattern in ["test-lite-*.start.json", "test-lite-*.end.json"]:
+    # Clean up prior session artifacts.
+    for pattern in ["test-lite-blocked-*.start.json", "test-lite-blocked-*.end.json"]:
         for stale in SESSION_DIR.glob(pattern):
             stale.unlink()
 
-    session_id = f"test-lite-{hash_before[:12]}"
+    session_id = f"test-lite-blocked-{hash_before[:12]}"
     _run_session_start(session_id)
 
     hash_after = _sha256(NATIVE_BASELINE)
     bytes_after = NATIVE_BASELINE.read_bytes()
 
+    # === Mandatory conformance assertion ===
+    # This asserts the native baseline MUST be unchanged.  It currently
+    # FAILS because the canonical tool overwrites .sentrux/baseline.json.
     assert hash_after == hash_before, (
-        f"session_start ALTERED the native baseline!\n"
+        f"BLOCKED: session_start ALTERED the native baseline!\n"
+        f"  Upstream gap: Invoke-SentruxAgentTool.ps1 calls sentrux gate --save\n"
+        f"  which hard-codes .sentrux/baseline.json.  No repo-level extension\n"
+        f"  surface exists to redirect this write.\n"
         f"  SHA-256 before: {hash_before}\n"
         f"  SHA-256 after:  {hash_after}\n"
         f"  Byte length before: {len(bytes_before)}\n"
         f"  Byte length after:  {len(bytes_after)}"
     )
 
-    assert LITE_BASELINE.is_file(), (
-        f"session_start did not write lite baseline to {LITE_BASELINE}"
-    )
-    lite_data = json.loads(LITE_BASELINE.read_text())
-    assert "tool" in lite_data or "engine" in lite_data, (
-        f"lite cache baseline has no tool/engine identifier"
-    )
-
-    start_files = list(SESSION_DIR.glob(f"{session_id}.start.json"))
-    assert len(start_files) == 1, "expected one session start evidence file"
-
     _cleanup_session(session_id)
 
 
-def test_session_end_does_not_alter_native_baseline_hash():
-    """session_end MUST leave the native baseline bytes unchanged."""
+def test_session_end_overwrites_native_baseline():
+    """session_end also overwrites the native baseline — 1.6 is BLOCKED.
+
+    After session_start already changed the baseline, session_end writes
+    again, confirming the hard-coded path in canonical beta.5 applies to
+    both session boundaries.
+    """
     hash_before = _sha256(NATIVE_BASELINE)
-    session_id = f"test-lite-end-{hash_before[:12]}"
+    session_id = f"test-lite-end-blocked-{hash_before[:12]}"
     _run_session_start(session_id)
 
     hash_after_start = _sha256(NATIVE_BASELINE)
@@ -179,7 +195,9 @@ def test_session_end_does_not_alter_native_baseline_hash():
     bytes_after_end = NATIVE_BASELINE.read_bytes()
 
     assert hash_after_end == hash_after_start, (
-        f"session_end ALTERED the native baseline after start!\n"
+        f"BLOCKED: session_end ALTERED the native baseline after start!\n"
+        f"  Same upstream gap as session_start — sentrux gate --save\n"
+        f"  hard-codes .sentrux/baseline.json.\n"
         f"  SHA-256 after start: {hash_after_start}\n"
         f"  SHA-256 after end:   {hash_after_end}\n"
         f"  Byte length after start: {len(bytes_after_start)}\n"
@@ -190,32 +208,7 @@ def test_session_end_does_not_alter_native_baseline_hash():
 
 
 # ---------------------------------------------------------------------------
-# Cache artifact assertions
-# ---------------------------------------------------------------------------
-
-
-def test_lite_cache_baseline_has_declared_schema_and_engine():
-    """The lite cache baseline MUST declare its schema/engine identity."""
-    if not LITE_BASELINE.is_file():
-        pytest.skip("lite cache baseline does not exist yet")
-    data = json.loads(LITE_BASELINE.read_text())
-    has_tool = "tool" in data
-    has_engine = "engine" in data
-    assert has_tool or has_engine, (
-        "lite cache baseline has neither 'tool' nor 'engine' field"
-    )
-    if has_engine:
-        assert data["engine"].get("id") != "sentrux-native", (
-            "lite cache baseline MUST NOT claim sentrux-native engine"
-        )
-    if "schema" in data:
-        assert data["schema"] != "code-intel-sentrux-baseline.v4", (
-            "lite cache baseline MUST NOT claim native v4 schema"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Adversarial: failure must exit non-zero
+# Adversarial: failure must exit non-zero (no tools/sentrux-shim needed)
 # ---------------------------------------------------------------------------
 
 
@@ -230,7 +223,7 @@ def test_session_start_with_nonexistent_path_fails_nonzero():
             "-SessionId", "test-nonexistent",
         ],
         capture_output=True, text=True, timeout=30,
-        env=_session_env(),
+        env=_ambient_env(),
     )
     assert proc.returncode != 0, (
         f"session_start on non-existent path should fail non-zero, "

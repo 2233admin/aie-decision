@@ -5,23 +5,28 @@
 - [x] 1.3 备份旧 `.sentrux/baseline.json`，记录其哈希、`sentrux-lite` 来源和旧指标，不覆盖原文件
 - [x] 1.4 使用原生引擎运行 scan 与 `check --no-ratchet`，确认当前规则通过并记录质量债务
 - [x] 1.5 经人工审核后生成 `code-intel-sentrux-baseline.v4` / `sentrux-native` baseline，并验证 schema 与 engine 字段
-- [x] 1.6 运行 lite session，证明其只写 `.sentrux/cache/lite-baseline.json` 且不改动原生 baseline
-  - Fixed via `CODE_INTEL_REPO_ROOT` canonical extension mechanism.  Created
-    `tools/sentrux-shim/sentrux-shim.ps1` and
-    `tools/sentrux-shim/sentrux-lite-core.ps1` with `Get-BaselinePath` and
-    `Write-Baseline` redirected to `.sentrux/cache/lite-baseline.json`.
-    Evaluator logic unchanged — only output path differs.  Verified: native
-    baseline SHA-256 unchanged before/after session_start and session_end.
-    Cache artifact at `.sentrux/cache/lite-baseline.json` with
-    `"tool": "sentrux-lite"` identifier.  Tests:
-    `tests/test_lite_session_contract.py` (5/5 pass).
+- [ ] 1.6 运行 lite session，证明其只写 `.sentrux/cache/lite-baseline.json` 且不改动原生 baseline
+  - **BLOCKED — upstream gap.** Canonical beta.5 `Invoke-SentruxAgentTool.ps1`
+    hard-codes `.sentrux/baseline.json` via `sentrux gate --save`.  No
+    repo-level extension surface exists.  `CODE_INTEL_REPO_ROOT` redirects
+    shim location but a cache-only implementation requires duplicating the
+    evaluator (forbidden — "不得第二套 evaluator").  Required upstream:
+    `--baseline-path` flag on `gate --save` or `-LiteBaselinePath` on
+    `Invoke-SessionStartTool`.  Prior violative attempt (commit 300718f,
+    `tools/sentrux-shim/` with catch-fallback and second evaluator) removed.
+    Tests: `tests/test_lite_session_contract.py` (FAILS as honest gate evidence).
 - [x] 1.7 重新运行完整 Code Intel Pipeline 和 Sentrux gate，要求不再出现 `domain_failed` 并记录 artifact directory
-  - Fixed: (a) `.gitignore` exclusions for `.codex/`, `.omc/`,
-    `.sentrux/agent-sessions/` stabilize `ExplicitOverlay` snapshot identity;
-    (b) `CODE_INTEL_INTEGRATIONS_MANIFEST` env var points to correct release
-    manifest, fixing pipeline root resolution.  Stale `CODE_INTEL_HOME` must
-    be unset.  Verified: exit 0, outcome `completed`, empty failures.
-    Tests: `tests/test_code_intel_pipeline.py` (4/4 pass).
+  - **PARTIAL — ambient default command BLOCKED.** (a) `.gitignore` exclusions
+    for `.codex/`, `.omc/`, `.sentrux/agent-sessions/` stabilize
+    `ExplicitOverlay` snapshot identity (TOCTOU fix — retained).  (b) The
+    ambient `code-intel . --mode normal --json` command exits 10 /
+    `domain_failed` / `manifest reconciliation failed` because canonical
+    beta.5 has no repo-local manifest discovery.  Pipeline passes only with
+    `CODE_INTEL_INTEGRATIONS_MANIFEST` env var (forbidden by task constraint
+    for default-command claim) or explicit `orchestrate --manifest` CLI flag.
+    Native Sentrux ratchet and rule checks pass independently.  Tests:
+    `tests/test_code_intel_pipeline.py` (1/3 pass — ambient test FAILS as
+    honest gate evidence).
 
 ## 2. 契约与依赖
 

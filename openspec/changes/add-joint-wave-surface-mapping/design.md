@@ -161,22 +161,29 @@ No transition may turn `UNKNOWN`, `FAILED` or `UNRESOLVED` into `ACCEPTED` witho
 3. Preserve the legacy `.sentrux/baseline.json` as a recoverable audit artifact and record its hash, tool (`sentrux-lite`) and metrics.
 4. Run native scan and rule check without ratchet. Only if they pass and a reviewer accepts the current debt may the native engine write a v2 baseline.
 5. **Verify lite sessions write only `.sentrux/cache/lite-baseline.json` and cannot overwrite the native baseline.**
-   - **DONE.** Implemented via `CODE_INTEL_REPO_ROOT` canonical extension
-     mechanism.  Created repo-local `tools/sentrux-shim/sentrux-shim.ps1`
-     and `tools/sentrux-shim/sentrux-lite-core.ps1` with `Get-BaselinePath`
-     and `Write-Baseline` redirected to `.sentrux/cache/lite-baseline.json`.
-     Evaluator logic is identical to canonical beta.5 — only the output
-     path differs.  Verified: native baseline SHA-256 unchanged across
-     `session_start` and `session_end`.  Tests:
-     `tests/test_lite_session_contract.py` (5/5 pass).
+   - **STATUS: BLOCKED — upstream gap.** Canonical beta.5
+     `Invoke-SentruxAgentTool.ps1` calls native `sentrux gate --save` which
+     hard-codes `.sentrux/baseline.json`.  No repo-level extension surface
+     exists to redirect this write.  The `CODE_INTEL_REPO_ROOT` env var
+     allows redirecting the sentrux-shim location, but implementing a
+     cache-only baseline requires duplicating the evaluator logic — a second
+     evaluator (forbidden by task constraints).  Required upstream changes:
+     `--baseline-path` flag on `gate --save`, or `-LiteBaselinePath`
+     parameter on `Invoke-SessionStartTool`.  Test evidence in
+     `tests/test_lite_session_contract.py` (FAILS as expected — honest
+     gate evidence for the upstream blocker).
 6. **Rerun the full Code Intel pipeline and require a non-`domain_failed` result with recorded artifact directory.**
-   - **DONE.** Fixed with (a) `.gitignore` exclusions for transient dirs
-     (`.codex/`, `.omc/`, `.sentrux/agent-sessions/`) to stabilize
-     `ExplicitOverlay` snapshot identity; (b) `CODE_INTEL_INTEGRATIONS_MANIFEST`
-     env var pointing to the correct release manifest to fix pipeline root
-     resolution.  Verified: `code-intel . --mode normal --json` → exit 0,
-     outcome `completed`, empty domain/process failures.
-     Tests: `tests/test_code_intel_pipeline.py` (4/4 pass).
+   - **STATUS: PARTIAL — ambient default command BLOCKED.** (a) `.gitignore`
+     exclusions for transient dirs (`.codex/`, `.omc/`,
+     `.sentrux/agent-sessions/`) stabilize `ExplicitOverlay` snapshot identity
+     (TOCTOU fix — retained).  (b) The ambient `code-intel . --mode normal
+     --json` command exits 10 / `domain_failed` / `manifest reconciliation
+     failed` because canonical beta.5 has no repo-local manifest discovery
+     mechanism.  The pipeline passes when `CODE_INTEL_INTEGRATIONS_MANIFEST`
+     is set or when using the explicit `orchestrate --manifest` CLI flag,
+     but the task constraint prohibits environment injection to claim the
+     default command passes.  Tests: `tests/test_code_intel_pipeline.py`
+     (1/3 pass — ambient test FAILS as honest gate evidence).
 
 Rollback restores the preserved legacy artifact and previous project command configuration; it does not pretend the legacy baseline is native-compatible.
 
