@@ -836,50 +836,84 @@ def _detect_modes(
     values: np.ndarray,
     weights: np.ndarray,
     *,
-    min_relative_prominence: float = 0.35,
-    min_separation_fraction: float = 0.15,
+    min_relative_prominence: float = 0.60,
+    min_separation_fraction: float = 0.20,
 ) -> tuple[int, np.ndarray]:
-    """Detect modes via weighted 1-D KDE on a fixed grid.
+    """Detect modes via histogram binning with valley-mass scoring.
 
-    The MVP uses a small kernel density estimate plus a simple
-    ``argmax``/``prominence`` scan so the output is stable across seeds.
-    ``min_relative_prominence`` is measured against the global maximum
-    density, not against an absolute threshold, so bimodal surfaces with
-    low overall density still register both peaks.  ``min_separation_fraction``
-    is the minimum distance between two detected modes, expressed as a
-    fraction of the value range, to suppress wiggles in the KDE.
+    Uses the same valley-mass approach as the package evaluator's
+    ``_bimodality`` so that the runner oracle and package authority
+    produce compatible bimodality classifications.  A mode is detected
+    only when the middle bins contain a clear valley between higher
+    left and right mass concentrations.
     """
-    if values.size == 0:
-        return 0, np.array([], dtype=np.float64)
+    if values.size < 4:
+        if values.size == 0:
+            return 0, np.array([], dtype=np.float64)
+        return 1, np.array([float(np.median(values))], dtype=np.float64)
+
     grid_min = float(np.min(values))
     grid_max = float(np.max(values))
     if not np.isfinite(grid_min) or not np.isfinite(grid_max) or grid_min == grid_max:
         return 1, np.array([grid_min], dtype=np.float64)
-    grid = np.linspace(grid_min, grid_max, num=256)
-    bandwidth = max((grid_max - grid_min) / 24.0, 1e-3)
-    diffs = (grid[:, None] - values[None, :]) / bandwidth
-    kernel = np.exp(-0.5 * diffs ** 2)
-    density = (kernel * weights[None, :]).sum(axis=1)
-    density = density / max(float(density.sum()), 1e-12)
-    max_density = float(density.max())
-    if max_density <= 0:
+
+    span = grid_max - grid_min
+    if span <= 0:
         return 1, np.array([grid_min], dtype=np.float64)
-    span = max(grid_max - grid_min, 1e-9)
-    min_grid_distance = max(int(min_separation_fraction * span / bandwidth), 8)
-    peaks: list[int] = []
-    for idx in range(1, len(density) - 1):
-        if density[idx] <= density[idx - 1] or density[idx] <= density[idx + 1]:
-            continue
-        if density[idx] < min_relative_prominence * max_density:
-            continue
-        if peaks and idx - peaks[-1] < min_grid_distance:
-            if density[idx] > density[peaks[-1]]:
-                peaks[-1] = idx
-            continue
-        peaks.append(idx)
-    if not peaks:
-        return 1, np.array([grid[int(np.argmax(density))]], dtype=np.float64)
-    return len(peaks), grid[np.array(peaks, dtype=np.int64)]
+
+    total_weight = float(weights.sum())
+    if total_weight <= 0:
+        return 1, np.array([grid_min], dtype=np.float64)
+
+    bin_count = min(8, max(3, len(values) // 4))
+    bin_width = span / bin_count
+    bin_mass = np.zeros(bin_count, dtype=np.float64)
+    for idx in range(len(values)):
+        bin_idx = int((values[idx] - grid_min) / bin_width)
+        if bin_idx >= bin_count:
+            bin_idx = bin_count - 1
+        bin_mass[bin_idx] += weights[idx]
+
+    max_mass = float(bin_mass.max())
+    if max_mass <= 0:
+        return 1, np.array([grid_min], dtype=np.float64)
+
+    # Split into three regions: left third, middle third, right third.
+    middle_start = bin_count // 3
+    middle_end = bin_count - middle_start
+    if middle_end - middle_start < 1:
+        return 1, np.array([(grid_min + grid_max) * 0.5], dtype=np.float64)
+
+    left_max = float(bin_mass[:middle_start].max()) if middle_start > 0 else 0.0
+    right_max = float(bin_mass[middle_end:].max()) if middle_end < bin_count else 0.0
+    valley = float(bin_mass[middle_start:middle_end].min())
+
+    left_density = left_max / max_mass
+    right_density = right_max / max_mass
+    valley_density = valley / max_mass
+
+    # Both edges must have at least 5% mass and the valley must be at most
+    # one-third of the weaker edge to count as bimodal.
+    if left_density <= 0.05 or right_density <= 0.05:
+        return 1, np.array([(grid_min + grid_max) * 0.5], dtype=np.float64)
+    if valley_density * 3.0 > min(left_density, right_density):
+        # Unimodal: find the bin with max mass as the single mode.
+        peak_bin = int(np.argmax(bin_mass))
+        centre = grid_min + (peak_bin + 0.5) * bin_width
+        return 1, np.array([centre], dtype=np.float64)
+
+    score = min(left_density, right_density) - valley_density
+    if score <= 0.15:
+        peak_bin = int(np.argmax(bin_mass))
+        centre = grid_min + (peak_bin + 0.5) * bin_width
+        return 1, np.array([centre], dtype=np.float64)
+
+    # Bimodal: return the two peak locations.
+    left_peak_bin = int(np.argmax(bin_mass[:middle_start]))
+    right_peak_bin = middle_end + int(np.argmax(bin_mass[middle_end:]))
+    left_centre = grid_min + (left_peak_bin + 0.5) * bin_width
+    right_centre = grid_min + (right_peak_bin + 0.5) * bin_width
+    return 2, np.array([left_centre, right_centre], dtype=np.float64)
 
 
 def _effective_sample_size(weights: np.ndarray) -> float:
