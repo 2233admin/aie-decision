@@ -37,7 +37,13 @@ class FactorIRError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class FactorIR:
-    """Compiled restricted factor IR with a dimensionless output contract."""
+    """Compiled restricted factor IR with declared output dimensions.
+
+    The output dimension records the dimensional signature of the formula;
+    it may be dimensional when the formula computes an axis value rather
+    than a log-potential.  Dimension compatibility of individual operations
+    (e.g. no adding time to money) is still enforced at compile time.
+    """
 
     schema_version: str
     mapping_id: str
@@ -52,10 +58,6 @@ class FactorIR:
             raise FactorIRError("FactorIR.mapping_id is required")
         if not self.formula.strip():
             raise FactorIRError("FactorIR.formula is required")
-        if any(exp != 0 for _, exp in self.output_dimension):
-            raise FactorIRError(
-                f"FactorIR output must be dimensionless; got {dict(self.output_dimension)}"
-            )
         names = [name for name, _ in self.input_dimensions]
         if len(set(names)) != len(names):
             raise FactorIRError("FactorIR.input_dimensions must declare each variable once")
@@ -125,6 +127,26 @@ def _parse_restricted(formula: str) -> ast.Expression:
     return tree
 
 
+def _resolve_variable_dimension(dim_key: str) -> dict[str, int]:
+    """Resolve a variable dimension key into a ``{dim: exponent}`` dict.
+
+    Simple dimension keys (e.g. ``"time"``, ``"money/USD"``) produce
+    ``{key: 1}``.  Composite keys like ``"money/USD:1;volume:-1"`` are
+    deserialized into their constituent exponents.
+    """
+    if dim_key == DIMENSIONLESS:
+        return {}
+    if ";" not in dim_key:
+        return {dim_key: 1}
+    result: dict[str, int] = {}
+    for part in dim_key.split(";"):
+        dim, _, exp_str = part.partition(":")
+        if not dim or not exp_str:
+            raise FactorIRError(f"invalid composite dimension key: {dim_key!r}")
+        result[dim] = int(exp_str)
+    return result
+
+
 def _dimension_signature(
     node: ast.AST,
     variable_dimensions: Mapping[str, str],
@@ -144,10 +166,7 @@ def _dimension_signature(
     if isinstance(node, ast.Name):
         if node.id not in variable_dimensions:
             raise FactorIRError(f"unknown variable in formula: {node.id!r}")
-        variable_dimension = variable_dimensions[node.id]
-        if variable_dimension == DIMENSIONLESS:
-            return {}
-        return {variable_dimension: 1}
+        return _resolve_variable_dimension(variable_dimensions[node.id])
     if isinstance(node, ast.UnaryOp):
         return _dimension_signature(node.operand, variable_dimensions)
     if isinstance(node, ast.BinOp):
@@ -227,14 +246,6 @@ def compile_factor_ir(
 
     tree = _parse_restricted(formula)
     signature = _dimension_signature(tree, dict(variable_dimensions))
-    if signature:
-        raise FactorIRError(
-            "factor IR output must be dimensionless; got "
-            + ", ".join(
-                f"{dimension}^{'+' if exponent > 0 else ''}{exponent}"
-                for dimension, exponent in sorted(signature.items())
-            )
-        )
     references = _collect_references(tree)
     missing = [name for name in references if name not in variable_dimensions]
     if missing:

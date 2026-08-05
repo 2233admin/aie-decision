@@ -1914,6 +1914,12 @@ def _run_authoritative(fixture: Path, output_dir: Path) -> int:
             }
         )
     )
+    # Fail closed: return non-zero when any required component was not
+    # called or when the ledger is empty.
+    if not result.provenance.all_components_called():
+        return 3
+    if not result.ledger.get("entries"):
+        return 4
     return 0
 
 

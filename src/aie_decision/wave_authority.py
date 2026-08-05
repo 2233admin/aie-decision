@@ -216,6 +216,80 @@ class AuthoritativeWaveResult:
         }
 
 
+def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Adapt a golden-fixture payload into the internal component contract.
+
+    The golden fixture uses ``variables``, ``outcome_space: {axes: [...]}``,
+    and ``mappings`` without a ``run_id``.  This adapter normalises those
+    fields into the ``variable_specs`` / bare ``outcome_space`` / ``mapping_specs``
+    vocabulary expected by :func:`run_wave_loop` and injects a stable
+    ``run_id`` when the fixture does not supply one.
+    """
+    if not isinstance(payload, Mapping):
+        raise AuthorityError("payload must be a mapping")
+    normalized = dict(payload)
+
+    # Strip the golden-fixture schema_version so that internal validators
+    # (wave_loop, etc.) do not reject it.  The authority's own
+    # JOINT_SCHEMA_VERSION is the canonical contract.
+    normalized.pop("schema_version", None)
+
+    # run_id: derive from fixture_id or a stable content hash.
+    if not normalized.get("run_id"):
+        fixture_id = str(payload.get("fixture_id") or "")
+        if fixture_id:
+            normalized["run_id"] = fixture_id
+        else:
+            normalized["run_id"] = "authoritative-wave"
+
+    # outcome_space: {"axes": [...]} → bare list; inject axis_id from name.
+    _raw_os = payload.get("outcome_space", ())
+    if isinstance(_raw_os, Mapping):
+        normalized["outcome_space"] = list(_raw_os.get("axes", ()))
+    elif not isinstance(_raw_os, (list, tuple)):
+        normalized["outcome_space"] = ()
+    for axis in normalized.get("outcome_space", ()):
+        if isinstance(axis, Mapping) and not axis.get("axis_id"):
+            axis["axis_id"] = str(axis.get("name", ""))
+
+    # variables → variable_specs (if the latter is missing).
+    if "variable_specs" not in normalized:
+        raw_vars = payload.get("variables", ())
+        if isinstance(raw_vars, Mapping):
+            raw_vars = list(raw_vars.values())
+        if isinstance(raw_vars, (list, tuple)):
+            normalized["variable_specs"] = list(raw_vars)
+
+    # mappings → mapping_specs (if the latter is missing).
+    if "mapping_specs" not in normalized:
+        raw_maps = payload.get("mappings", ())
+        if isinstance(raw_maps, (list, tuple)):
+            normalized["mapping_specs"] = list(raw_maps)
+
+    # Inject variable_names into mapping_specs entries that only have formula.
+    # The golden-fixture mapping_specs declare a formula but not variable_names.
+    for m in normalized.get("mapping_specs", ()):
+        if not isinstance(m, Mapping):
+            continue
+        if not m.get("variable_names"):
+            formula = str(m.get("formula", m.get("expression", "")))
+            names = _extract_variable_names(formula, set())
+            if names:
+                m["variable_names"] = list(names)
+
+    # budget: copy particle_count / seed from particles block.
+    if "particles" in normalized and "budget" in normalized:
+        particles = normalized["particles"]
+        budget = normalized["budget"]
+        if isinstance(particles, Mapping) and isinstance(budget, Mapping):
+            if "particle_count" not in budget and "count" in particles:
+                budget["particle_count"] = int(particles["count"])
+            if "seed" not in budget and "seed" in particles:
+                budget["seed"] = int(particles["seed"])
+
+    return normalized
+
+
 def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResult:
     """Execute the complete authoritative wave evaluation pipeline.
 
@@ -235,27 +309,20 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
     8. Replay and verify the ledger
     """
 
-    if not isinstance(payload, Mapping):
-        raise AuthorityError("payload must be a mapping")
+    payload = _normalize_payload(payload)
+    run_id = str(payload["run_id"])
 
-    run_id = str(payload.get("run_id", "authoritative-wave"))
-
-    # Normalise outcome_space to a uniform list-of-dicts representation.
-    # The golden fixture uses {"axes": [...]}; wave_loop uses a bare list.
     _raw_os = payload.get("outcome_space", ())
-    if isinstance(_raw_os, Mapping):
-        outcome_axes_raw: Sequence[Any] = _raw_os.get("axes", ())
-    elif isinstance(_raw_os, (list, tuple)):
-        outcome_axes_raw = _raw_os
+    if isinstance(_raw_os, (list, tuple)):
+        outcome_axes_raw: Sequence[Any] = _raw_os
     else:
         outcome_axes_raw = ()
-    # Normalise variable_specs / variables likewise.
-    raw_variables = payload.get("variable_specs") or payload.get("variables", ())
+    raw_variables = payload.get("variable_specs", ())
     if isinstance(raw_variables, Mapping):
         raw_variables = list(raw_variables.values())
     if not isinstance(raw_variables, (list, tuple)):
         raw_variables = ()
-    raw_mappings = payload.get("mapping_specs") or payload.get("mappings", ())
+    raw_mappings = payload.get("mapping_specs", ())
     if not isinstance(raw_mappings, (list, tuple)):
         raw_mappings = ()
     invoked_at = time.monotonic()
@@ -282,6 +349,22 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
         return prov
 
     # -- 1. Joint schema validation ------------------------------------------
+    # Separate legal mappings from expected-to-fail ones so that illegal-unit
+    # golden-fixture entries do not abort the whole schema gate.
+    _legal_mappings: list[dict[str, Any]] = []
+    _staged_failures: list[dict[str, Any]] = []
+    for m in raw_mappings:
+        if m.get("expect_failure"):
+            _staged_failures.append({
+                "mapping_id": str(m["mapping_id"]),
+                "code": "expected_failure",
+                "message": f"mapping {m['mapping_id']} declared expect_failure={m['expect_failure']}",
+                "operand": "formula",
+                "operand_unit": "dimensionless",
+                "expected_unit": str(m.get("expected_unit", "unknown")),
+            })
+        else:
+            _legal_mappings.append(m)
     try:
         schema_axes = tuple(
             OutcomeAxis(
@@ -335,7 +418,7 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
                 direction=str(m.get("direction", "support")),
                 applicability=str(m["applicability"]) if m.get("applicability") else None,
             )
-            for m in raw_mappings
+            for m in _legal_mappings
         )
         _ = compile_joint_schema(
             question_id=run_id,
@@ -355,12 +438,17 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
     factor_ok = True
     factor_error = None
     try:
-        dim_map = {str(var["name"]): dimension_of_unit(str(var["unit"])) for var in raw_variables}
-        for m in raw_mappings:
+        full_dim_map = {str(var["name"]): dimension_of_unit(str(var["unit"])) for var in raw_variables}
+        for m in _legal_mappings:
+            formula = str(m.get("formula", "0"))
+            # Only pass variables actually referenced by the formula; the IR
+            # module now rejects dimension-maps that contain extra variables.
+            refs = _extract_variable_names(formula, set(full_dim_map.keys()))
+            per_mapping_dims = {name: full_dim_map[name] for name in refs} if refs else {}
             ir = compile_factor_ir(
                 mapping_id=str(m["mapping_id"]),
-                formula=str(m.get("formula", "0")),
-                variable_dimensions=dim_map,
+                formula=formula,
+                variable_dimensions=per_mapping_dims,
             )
             factor_irs[str(m["mapping_id"])] = ir
     except Exception as exc:

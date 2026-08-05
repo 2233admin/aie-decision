@@ -74,10 +74,11 @@ _TIME = "time"
 _MASS = "mass"
 _MONEY = "money"
 _COUNT = "count"
+_VOLUME = "volume"
 _DIMENSIONLESS = DIMENSIONLESS
 
 _KNOWN_DIMENSIONS: frozenset[str] = frozenset(
-    {_LENGTH, _TIME, _MASS, _MONEY, _COUNT, _DIMENSIONLESS}
+    {_LENGTH, _TIME, _MASS, _MONEY, _COUNT, _VOLUME, _DIMENSIONLESS}
 )
 
 # Each unit maps to (dimension, factor_to_canonical_unit).
@@ -138,6 +139,10 @@ _UNIT_TABLE: dict[str, tuple[str, float]] = {
     "eur": (_MONEY_DIMENSION_PREFIX + "EUR", 1.0),
     "JPY": (_MONEY_DIMENSION_PREFIX + "JPY", 1.0),
     "jpy": (_MONEY_DIMENSION_PREFIX + "JPY", 1.0),
+    # volume
+    "l": (_VOLUME, 1.0),
+    "liter": (_VOLUME, 1.0),
+    "liters": (_VOLUME, 1.0),
     # count
     "count": (_COUNT, 1.0),
     "item": (_COUNT, 1.0),
@@ -156,14 +161,86 @@ _UNIT_TABLE: dict[str, tuple[str, float]] = {
 
 
 def dimension_of_unit(unit: object) -> str:
-    """Return the base dimension for ``unit`` or raise :class:`UnknownUnitError`."""
+    """Return the base dimension for ``unit`` or raise :class:`UnknownUnitError`.
+
+    Compound units (e.g. ``usd/liter``, ``km/hour``) are decomposed into
+    their constituent base dimensions and returned as a serialized composite
+    key of the form ``dim:exp;dim:exp;...``.  Callers that only care about
+    simple units remain unaffected; callers that perform dimension algebra
+    (e.g. :func:`compile_factor_ir`) parse the composite key to recover the
+    per-dimension exponents.
+    """
 
     if not isinstance(unit, str) or not unit.strip():
         raise UnknownUnitError(unit)
     key = unit.strip()
-    if key not in _UNIT_TABLE:
+    if key in _UNIT_TABLE:
+        return _UNIT_TABLE[key][0]
+    # Decompose compound unit: split on "/" then on "*".
+    numerator, sep, denominator = key.partition("/")
+    if not sep:
         raise UnknownUnitError(key)
-    return _UNIT_TABLE[key][0]
+    num_result = _decompose_term(numerator.strip() or "dimensionless", sign=1)
+    den_result = _decompose_term(denominator.strip() or "dimensionless", sign=-1)
+    merged: dict[str, int] = dict(num_result)
+    for dim, exp in den_result.items():
+        merged[dim] = merged.get(dim, 0) + exp
+    pruned = _prune_dimensions(merged)
+    if not pruned:
+        return DIMENSIONLESS
+    return _serialize_composite(pruned)
+
+
+def _decompose_term(term: str, *, sign: int) -> dict[str, int]:
+    """Decompose a unit term that may contain ``*``-separated sub-units."""
+    result: dict[str, int] = {}
+    for sub in term.split("*"):
+        sub = sub.strip()
+        if not sub:
+            continue
+        base_dim = _UNIT_TABLE[sub][0] if sub in _UNIT_TABLE else _resolve_composite(sub)
+        if base_dim == DIMENSIONLESS:
+            continue
+        result[base_dim] = result.get(base_dim, 0) + sign
+    return result
+
+
+def _resolve_composite(sub_unit: str) -> str:
+    """Resolve a sub-unit that may itself be a composite (recursive)."""
+    if sub_unit in _UNIT_TABLE:
+        return _UNIT_TABLE[sub_unit][0]
+    if "/" in sub_unit or "*" in sub_unit:
+        return dimension_of_unit(sub_unit)
+    raise UnknownUnitError(sub_unit)
+
+
+def _prune_dimensions(dims: dict[str, int]) -> dict[str, int]:
+    return {k: v for k, v in dims.items() if v != 0}
+
+
+def _serialize_composite(dims: dict[str, int]) -> str:
+    """Serialize a dimension->exponent dict as ``dim:exp;dim:exp``."""
+    return ";".join(f"{k}:{v}" for k, v in sorted(dims.items()))
+
+
+def _parse_composite(key: str) -> dict[str, int]:
+    """Deserialize a composite dimension key back to a dimension dict.
+
+    Simple (non-compound) keys are returned as ``{key: 1}``.
+    """
+    if ";" not in key:
+        return {key: 1} if key != DIMENSIONLESS else {}
+    result: dict[str, int] = {}
+    for part in key.split(";"):
+        dim, _, exp_str = part.partition(":")
+        if not dim or not exp_str:
+            raise JointSchemaError(f"invalid composite dimension key: {key!r}")
+        result[dim] = int(exp_str)
+    return result
+
+
+parse_composite_dimension = _parse_composite
+"""Public alias for :func:`_parse_composite` so callers can decode composite dimension keys."""
 
 
 def known_dimensions() -> frozenset[str]:
@@ -183,6 +260,8 @@ def canonical_unit(dimension: str) -> str:
         return "kg"
     if dimension == _COUNT:
         return "count"
+    if dimension == _VOLUME:
+        return "liter"
     if dimension == _DIMENSIONLESS:
         return "dimensionless"
     if dimension.startswith(_MONEY_DIMENSION_PREFIX):
@@ -584,4 +663,5 @@ __all__ = [
     "canonical_unit",
     "known_dimensions",
     "normalize_to_canonical",
+    "parse_composite_dimension",
 ]

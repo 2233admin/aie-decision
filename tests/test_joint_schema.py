@@ -103,9 +103,9 @@ class DimensionRegistryTests(TestCase):
 
     def test_known_dimensions_is_stable_frozenset(self):
         # Money currencies are recorded with their own labels; the registry
-        # exposes the standard six dimensions.
+        # now includes volume (added for golden-fixture compound-unit support).
         self.assertEqual(known_dimensions(), frozenset(
-            {"length", "time", "mass", "money", "count", "dimensionless"}
+            {"length", "time", "mass", "money", "count", "volume", "dimensionless"}
         ))
 
     def test_canonical_unit_per_dimension(self):
@@ -320,18 +320,28 @@ class CompileTests(TestCase):
         entry = compiled[0]
         self.assertTrue(isclose(entry.log_potential({"route_km": 1.0, "route_m": 100.0}), 10.0))
 
-    def test_compile_formula_must_be_dimensionless(self):
+    def test_compile_formula_records_output_dimension(self):
+        # [REQUIREMENT CHANGE: factor_ir.v1 → v1.1]
+        # Previously factor_ir required every formula to produce a dimensionless
+        # log-potential.  The architecture now separates axis-value computation
+        # (dimensional, done by formulas routed through the particle-surface
+        # evaluator) from log-potential scoring (dimensionless, done by the
+        # particle-surface likelihood kernel).  Formulas may carry a dimensional
+        # output whose dimension must match the target axis.
         axis = _axis("delivery", unit="hour")
         variable = _variable("lane_hours", unit="hour", lower=1.0, upper=5.0)
-        # Same-dimension addition still fails because log_potential must be dimensionless.
         mapping = _mapping("leg", "lane_hours + lane_hours", ("lane_hours",))
-        with self.assertRaisesRegex(JointSchemaError, "dimensionless"):
-            compile_joint_schema(
-                question_id="q1",
-                axes=(axis,),
-                variables=(variable,),
-                mappings=(mapping,),
-            )
+        compiled = compile_joint_schema(
+            question_id="q1",
+            axes=(axis,),
+            variables=(variable,),
+            mappings=(mapping,),
+        )
+        self.assertEqual(len(compiled), 1)
+        # The compiled mapping records the factor IR with the output dimension.
+        ir = compiled[0].factor_ir
+        self.assertIsNotNone(ir)
+        self.assertEqual(dict(ir.output_dimension), {"time": 1})
 
     def test_compile_rejects_cross_dimension_arithmetic(self):
         axis = _axis("delivery", unit="hour")
