@@ -4,20 +4,17 @@
 - [x] 1.2 补齐 canonical doctor 报告缺失的 `repowise`，重新运行 doctor 并保存 JSON 证据
 - [x] 1.3 备份旧 `.sentrux/baseline.json`，记录其哈希、`sentrux-lite` 来源和旧指标，不覆盖原文件
 - [x] 1.4 使用原生引擎运行 scan 与 `check --no-ratchet`，确认当前规则通过并记录质量债务
-- [x] 1.5 经人工审核后生成 `code-intel-sentrux-baseline.v5` / `sentrux-native` baseline，并验证 schema 与 engine 字段
-  - **MIGRATED 2026-08-05.**  The v4 baseline (corrupted provenance — dirty tree with
-    false sourceCommit b300bb43) has been replaced by a v5 baseline generated
-    from clean committed tree 410375b in an isolated worktree
-    (joint-wave-mvp-integration).  Audit artifact:
-    `docs/sentrux-baseline-v4-to-v5-migration-audit.json`.
-    Raw v4 bytes preserved: `.sentrux/baseline.v4.corrupted-provenance.backup.json`.
-  - v5 sourceCommit: 410375b6cc3fbfc6e3e1a021cdcead2be0fa463e
-  - v5 metrics: files=63, quality_signal=8617, coupling_score=67.78,
-    cycle_count=0, god_file_count=7
-  - godFiles identities (7): scripts/run_joint_wave_surface_mvp.py,
-    src/aie_decision/joint_schema.py, src/aie_decision/particle_surface.py,
-    src/aie_decision/wave_authority.py, src/aie_decision/wave_loop.py,
-    tests/test_joint_schema.py, tests/test_wave_authority_adversarial.py
+- [~] 1.5 经人工审核后生成 baseline 并验证 schema 与 engine
+  - **RESCINDED — v5 migration attempted but rejected.**  The v5 baseline
+    generated from clean 410375b tree showed objective degradation of ALL
+    gated metrics vs the existing v4 ratchet: quality 8617 < 8795,
+    coupling 67.78 > 60.51, god_files 7 > 6.  The dirty-tree cleanup
+    explains the deltas but does not satisfy the non-degradation gate.
+    v4 baseline with corrupted provenance (false sourceCommit b300bb43)
+    is preserved as the failing fail-closed gate until a non-degraded
+    clean-tree anchor can be established.
+  - v4 backup: `.sentrux/baseline.v4.corrupted-provenance.backup.json`
+    SHA256: 497C0A06E2CC9DD9248B3D2ABF19CF1021D1F596348EE866E1ACDC92F5C325B2
 - [ ] 1.6 运行 lite session，证明其只写 `.sentrux/cache/lite-baseline.json` 且不改动原生 baseline
   - **BLOCKED — upstream gap.** Canonical beta.5 `Invoke-SentruxAgentTool.ps1`
     hard-codes `.sentrux/baseline.json` via `sentrux gate --save`.  No

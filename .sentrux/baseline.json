@@ -3,66 +3,22 @@
     "id": "sentrux-native",
     "version": "2.2.0"
   },
-  "godFiles": [
-    {
-      "functions": 71,
-      "loc": 1921,
-      "path": "scripts/run_joint_wave_surface_mvp.py",
-      "rule": "loc>800; functions>25&&loc>400"
-    },
-    {
-      "functions": 35,
-      "loc": 667,
-      "path": "src/aie_decision/joint_schema.py",
-      "rule": "functions>25&&loc>400"
-    },
-    {
-      "functions": 22,
-      "loc": 849,
-      "path": "src/aie_decision/wave_authority.py",
-      "rule": "loc>800"
-    },
-    {
-      "functions": 53,
-      "loc": 1261,
-      "path": "src/aie_decision/wave_loop.py",
-      "rule": "loc>800; functions>25&&loc>400"
-    },
-    {
-      "functions": 52,
-      "loc": 491,
-      "path": "tests/test_joint_schema.py",
-      "rule": "functions>25&&loc>400"
-    },
-    {
-      "functions": 26,
-      "loc": 573,
-      "path": "tests/test_particle_surface.py",
-      "rule": "functions>25&&loc>400"
-    },
-    {
-      "functions": 36,
-      "loc": 615,
-      "path": "tests/test_wave_authority_adversarial.py",
-      "rule": "functions>25&&loc>400"
-    }
-  ],
   "metrics": {
-    "branch_density_per_fn": 13,
+    "branch_density_per_fn": 14,
     "complex_fn_count": 0,
-    "coupling_score": 67.78,
-    "cross_module_edges": 427,
+    "coupling_score": 60.51,
+    "cross_module_edges": 478,
     "cycle_count": 0,
-    "files": 63,
-    "functions": 955,
-    "god_file_count": 7,
-    "import_modeled_files": 63,
-    "max_complexity": 13,
-    "quality_signal": 8617,
-    "total_import_edges": 427
+    "files": 79,
+    "functions": 1024,
+    "god_file_count": 6,
+    "import_modeled_files": 79,
+    "max_complexity": 14,
+    "quality_signal": 8795,
+    "total_import_edges": 478
   },
-  "savedAt": 1785921581,
-  "schema": "code-intel-sentrux-baseline.v5",
+  "savedAt": 1785872563,
+  "schema": "code-intel-sentrux-baseline.v4",
   "scope": ".",
-  "sourceCommit": "410375b6cc3fbfc6e3e1a021cdcead2be0fa463e"
+  "sourceCommit": "b300bb43dce6cf38ed341b1eca33c5ef495a645b"
 }
