@@ -68,11 +68,9 @@ def _parse_result(proc: subprocess.CompletedProcess) -> dict:
 def test_ambient_pipeline_must_pass_exit_zero():
     """``code-intel . --mode normal --json`` MUST exit 0 (mandatory conformance).
 
-    This is the AIE architecture gate.  Exit 10 / ``domain_failed`` is a
-    real failure — manifest reconciliation fails because canonical beta.5
-    has no repo-local manifest discovery mechanism.  The test serves as a
-    **failing ratchet**: it MUST NOT pass until the architecture gate is
-    resolved.  Never save a new baseline that masks this.
+    This is the AIE architecture gate.  Exit 10 / ``domain_failed`` remains a
+    real failure.  Success must also use the compiled execution-result
+    contract: ``outcome=completed`` with no domain/process failures.
 
     The prior version of this test accepted exit 10 as a "known baseline"
     — that was a weakening of the mandatory conformance assertion.  This
@@ -91,12 +89,14 @@ def test_ambient_pipeline_must_pass_exit_zero():
         f"  stderr: {proc.stderr}\n"
         f"This is a FAILING RATCHET — do not save a new baseline."
     )
-    assert result["outcome"] == "passed", (
-        f"Expected outcome 'passed', got {result['outcome']!r}.  "
+    assert result["outcome"] == "completed", (
+        f"Expected canonical outcome 'completed', got {result['outcome']!r}.  "
         f"Architecture gate is FAILING."
     )
     assert result["schema"] == "code-intel-primary-result.v1"
-    assert isinstance(result.get("failures"), dict)
+    assert result.get("failureNode") is None
+    assert result.get("diagnostic") is None
+    assert result.get("failures") == {"domain": [], "process": []}
 
 
 def test_ambient_pipeline_failure_must_be_manifest_reconciliation():

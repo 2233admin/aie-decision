@@ -51,4 +51,3 @@ The system MUST terminate when decision value is achieved, expected marginal ben
 #### Scenario: Deterministic action replay
 - **WHEN** an Agent replays the same ledger with matching inputs and evaluator versions
 - **THEN** the system reproduces the same state transitions and action ordering within the declared tolerance
-

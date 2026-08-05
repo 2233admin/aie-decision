@@ -47,4 +47,3 @@ The system MUST support deterministic replay from the same input, seed, schema v
 #### Scenario: Resource budget is insufficient
 - **WHEN** a requested evaluation exceeds the configured memory budget
 - **THEN** the system uses a declared bounded-memory execution plan or returns a structured resource failure without silently reducing requested semantics or precision
-

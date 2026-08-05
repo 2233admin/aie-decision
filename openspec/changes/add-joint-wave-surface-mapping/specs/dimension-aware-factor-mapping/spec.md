@@ -47,4 +47,3 @@ The system MUST convert accepted mapping contributions to a dimensionless suppor
 #### Scenario: Score semantics are absent
 - **WHEN** a mapping produces a dimensional value or an unexplained arbitrary score
 - **THEN** the system rejects it rather than silently normalizing it
-
