@@ -121,17 +121,29 @@ def test_prerequisites():
     )
 
 
-def test_native_baseline_schema_is_v4():
-    """The real native baseline MUST have schema v4 (read-only check)."""
+def test_native_baseline_schema_is_v5():
+    """The real native baseline MUST have schema v5 with godFiles
+    identity list (read-only check).  Migrated from v4 to v5 as the
+    first verifiable clean-tree anchor (commit 410375b)."""
     baseline_data = json.loads(REAL_BASELINE.read_text())
-    assert baseline_data.get("schema") == "code-intel-sentrux-baseline.v4", (
-        f"Native baseline schema mismatch: expected v4, "
+    assert baseline_data.get("schema") == "code-intel-sentrux-baseline.v5", (
+        f"Native baseline schema mismatch: expected v5, "
         f"got {baseline_data.get('schema')}"
     )
     engine = baseline_data.get("engine", {})
     assert engine.get("id") == "sentrux-native", (
         f"Native baseline engine mismatch: expected sentrux-native, "
         f"got {engine.get('id')}"
+    )
+    # v5 contract: godFiles identity list must be present.
+    assert "godFiles" in baseline_data, (
+        "v5 baseline must contain a godFiles identity list"
+    )
+    assert isinstance(baseline_data["godFiles"], list), (
+        "godFiles must be a list"
+    )
+    assert len(baseline_data["godFiles"]) > 0, (
+        "godFiles must not be empty"
     )
 
 

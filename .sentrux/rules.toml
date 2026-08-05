@@ -1,0 +1,48 @@
+# AIE standalone architecture: immutable contracts at the base, domain
+# transformations above them, and orchestration/product surfaces at the edge.
+
+[constraints]
+max_cycles = 0
+pollution_exclusions = [".venv", "__pycache__", "artifacts"]
+
+[[layers]]
+name = "contracts"
+paths = [
+  "src/aie_decision/models.py",
+  "src/aie_decision/validation.py",
+  "src/aie_decision/ledger.py",
+]
+order = 0
+
+[[layers]]
+name = "domain"
+paths = [
+  "src/aie_decision/decomposition.py",
+  "src/aie_decision/evidence.py",
+  "src/aie_decision/measurement.py",
+  "src/aie_decision/factors.py",
+  "src/aie_decision/intervals.py",
+]
+order = 1
+
+[[layers]]
+name = "surface"
+paths = [
+  "src/aie_decision/pipeline.py",
+  "src/aie_decision/cli.py",
+  "src/aie_decision/exporting.py",
+  "src/aie_decision/recompute.py",
+  "src/aie_decision/privacy.py",
+  "src/aie_decision/acceptance.py",
+]
+order = 2
+
+[[boundaries]]
+from = "src/aie_decision/models.py"
+to = "src/aie_decision/cli.py"
+reason = "The immutable domain contracts must not depend on the CLI surface."
+
+[[boundaries]]
+from = "src/aie_decision/evidence.py"
+to = "src/aie_decision/pipeline.py"
+reason = "Evidence compilation remains reusable and must not depend on orchestration."
