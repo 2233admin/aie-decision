@@ -1,0 +1,24 @@
+{
+  "engine": {
+    "id": "sentrux-native",
+    "version": "2.2.0"
+  },
+  "metrics": {
+    "branch_density_per_fn": 14,
+    "complex_fn_count": 0,
+    "coupling_score": 60.51,
+    "cross_module_edges": 478,
+    "cycle_count": 0,
+    "files": 79,
+    "functions": 1024,
+    "god_file_count": 6,
+    "import_modeled_files": 79,
+    "max_complexity": 14,
+    "quality_signal": 8795,
+    "total_import_edges": 478
+  },
+  "savedAt": 1785872563,
+  "schema": "code-intel-sentrux-baseline.v4",
+  "scope": ".",
+  "sourceCommit": "b300bb43dce6cf38ed341b1eca33c5ef495a645b"
+}
