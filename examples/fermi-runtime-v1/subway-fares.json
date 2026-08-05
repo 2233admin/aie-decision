@@ -1,0 +1,73 @@
+{
+  "schema_version": "fermi-runtime-example.v1",
+  "user_input": {
+    "question": "上海地铁乘客在典型工作日支付多少票款？"
+  },
+  "ai_semantic_actions": [
+    {
+      "action": "define_question",
+      "payload": {
+        "target_subject": "上海地铁工作日票款",
+        "target_measure": "乘客支付的票款总额",
+        "unit": "CNY/day",
+        "time_basis": "2026年典型工作日",
+        "scope": {"population": "上海地铁付费乘客", "geography": "上海", "time_window": "典型工作日"},
+        "acceptable_width": 5000000,
+        "decision_use": "评估票价收入量级"
+      }
+    },
+    {
+      "action": "expand",
+      "payload": {
+        "node_id": "n_0001",
+        "parent_unit": "CNY/day",
+        "expression": "_child_0 * _child_1",
+        "rationale": "每日票款等于付费乘客数乘以人均票款",
+        "children": [
+          {"label": "工作日付费乘客数", "unit": "person/day", "scope": {"population": "上海地铁付费乘客", "geography": "上海", "time_window": "典型工作日"}},
+          {"label": "每位乘客平均票款", "unit": "CNY/person", "scope": {"population": "上海地铁付费乘客", "geography": "上海", "time_window": "典型工作日"}}
+        ]
+      }
+    },
+    {
+      "action": "propose_atom",
+      "payload": {
+        "node_id": "n_0002",
+        "target_object": "在闸机记录中完成付费进站的乘客",
+        "unit": "person/day",
+        "scope": {"population": "上海地铁付费乘客", "geography": "上海", "time_window": "典型工作日"},
+        "measurement_kind": "record_lookup",
+        "source": "按日汇总的闸机交易记录",
+        "procedure": "汇总指定工作日全部有效付费进站记录",
+        "observation_kind": "estimated",
+        "marginal": {"kind": "quantile", "p05": 9800000, "p50": 10000000, "p95": 10200000, "family": "normal", "rationale": "历史相邻工作日波动"}
+      }
+    },
+    {
+      "action": "propose_atom",
+      "payload": {
+        "node_id": "n_0003",
+        "target_object": "每条有效乘车交易实际扣款金额",
+        "unit": "CNY/person",
+        "scope": {"population": "上海地铁付费乘客", "geography": "上海", "time_window": "典型工作日"},
+        "measurement_kind": "record_lookup",
+        "source": "票务清算交易记录",
+        "procedure": "用当日有效交易总扣款除以付费进站人数",
+        "observation_kind": "estimated",
+        "marginal": {"kind": "quantile", "p05": 3.9, "p50": 4.0, "p95": 4.1, "family": "normal", "rationale": "历史票种组合波动"}
+      }
+    },
+    {"action": "set_dependence", "payload": {"dependence": "independent", "sample_count": 4096, "seed": 17, "rationale": "v1 assumes global independence; no pairwise evidence was supplied"}},
+    {"action": "evaluate", "payload": {}},
+    {"action": "test_frontier", "payload": {"material_degradation": 0.1, "minimum_useful_narrowing": 3000000}}
+  ],
+  "audited_output_fields": [
+    "target_interval_90",
+    "interval_width",
+    "next_measurement",
+    "necessity",
+    "saturation",
+    "certificate",
+    "dependency_gaps"
+  ]
+}
