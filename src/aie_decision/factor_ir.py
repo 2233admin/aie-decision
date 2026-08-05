@@ -37,13 +37,7 @@ class FactorIRError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class FactorIR:
-    """Compiled restricted factor IR with declared output dimensions.
-
-    The output dimension records the dimensional signature of the formula;
-    it may be dimensional when the formula computes an axis value rather
-    than a log-potential.  Dimension compatibility of individual operations
-    (e.g. no adding time to money) is still enforced at compile time.
-    """
+    """Compiled restricted factor IR with a dimensionless output contract."""
 
     schema_version: str
     mapping_id: str
@@ -58,6 +52,10 @@ class FactorIR:
             raise FactorIRError("FactorIR.mapping_id is required")
         if not self.formula.strip():
             raise FactorIRError("FactorIR.formula is required")
+        if any(exp != 0 for _, exp in self.output_dimension):
+            raise FactorIRError(
+                f"FactorIR output must be dimensionless; got {dict(self.output_dimension)}"
+            )
         names = [name for name, _ in self.input_dimensions]
         if len(set(names)) != len(names):
             raise FactorIRError("FactorIR.input_dimensions must declare each variable once")
@@ -246,6 +244,14 @@ def compile_factor_ir(
 
     tree = _parse_restricted(formula)
     signature = _dimension_signature(tree, dict(variable_dimensions))
+    if signature:
+        raise FactorIRError(
+            "factor IR output must be dimensionless; got "
+            + ", ".join(
+                f"{dimension}^{'+' if exponent > 0 else ''}{exponent}"
+                for dimension, exponent in sorted(signature.items())
+            )
+        )
     references = _collect_references(tree)
     missing = [name for name in references if name not in variable_dimensions]
     if missing:

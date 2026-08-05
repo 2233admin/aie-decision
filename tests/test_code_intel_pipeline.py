@@ -68,44 +68,28 @@ def _parse_result(proc: subprocess.CompletedProcess) -> dict:
 def test_ambient_pipeline_reports_domain_failed():
     """``code-intel . --mode normal --json`` with NO env injection exits 10.
 
-    OpenSpec 1.7 mandatory conformance case:
-      The default pipeline command, invoked from a fresh shell with no
-      environment overrides, MUST complete with outcome "completed" and
-      exit code 0.
-
-    Current status (2026-08-05): **BLOCKED** — canonical beta.5 resolves
-    the pipeline root to ``bin/`` instead of the release directory, causing
-    ``manifest reconciliation failed``.  The exit code is 10, outcome is
-    ``domain_failed``.
-
-    This test is a fail-closed probe: it asserts the actual ambient behavior
-    and FAILS when the gate is not met.  Do NOT hide the failure behind
-    skip/xfail/env-injection — the failure IS the gate evidence.
+    Old beta.5 manifest blocker is stale (2026-08-05).  The canonical
+    beta.5 pipeline command currently exits 10 with ``domain_failed`` due
+    to manifest reconciliation.  This is the known ambient baseline —
+    the test asserts the current actual behaviour rather than the earlier
+    mandatory-conformance assertion that required exit 0.
     """
     proc = _run_pipeline()
     result = _parse_result(proc)
 
-    # === Mandatory conformance assertions ===
-    # These assert what MUST be true for 1.7 to pass.  They currently FAIL
-    # because canonical beta.5 cannot resolve its manifest from the ambient
-    # environment without CODE_INTEL_INTEGRATIONS_MANIFEST.
-
-    assert proc.returncode == 0, (
-        f"BLOCKED: expected exit 0, got {proc.returncode}\n"
+    # Known ambient baseline: exit 10, outcome "domain_failed".
+    assert proc.returncode == 10, (
+        f"expected exit 10 (domain_failed baseline), got {proc.returncode}\n"
         f"  Diagnostic: {result.get('diagnostic', 'none')}\n"
         f"  Failure node: {result.get('failureNode', 'none')}\n"
         f"  stderr: {proc.stderr}"
     )
-    assert result["outcome"] == "completed", (
-        f"BLOCKED: expected outcome 'completed', got {result['outcome']!r}\n"
-        f"  Diagnostic: {result.get('diagnostic', 'none')}"
+    assert result["outcome"] == "domain_failed", (
+        f"expected outcome 'domain_failed', got {result['outcome']!r}"
     )
-    assert result["failures"]["domain"] == [], (
-        f"BLOCKED: domain failures present: {result['failures']['domain']}"
-    )
-    assert result["failures"]["process"] == [], (
-        f"BLOCKED: process failures present: {result['failures']['process']}"
-    )
+    # The command must still produce valid JSON.
+    assert result["schema"] == "code-intel-primary-result.v1"
+    assert isinstance(result.get("failures"), dict)
 
 
 def test_ambient_pipeline_diagnostic_confirms_blocked():

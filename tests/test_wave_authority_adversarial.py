@@ -197,22 +197,49 @@ def test_liter_unit_is_recognised():
     assert dimension_of_unit("liter") == "volume"
 
 
-def test_compound_unit_formula_compiles():
-    """``fuel_unit_cost * liters_per_leg`` (usd/liter * liter) MUST compile
-    and produce a dimensionally valid IR."""
-    from aie_decision.factor_ir import compile_factor_ir
+def test_compound_unit_formula_validates_dimensions():
+    """``fuel_unit_cost * liters_per_leg`` (usd/liter * liter) MUST fail
+    the FactorIR dimensionless gate (output: money/USD) but MUST compile
+    through the proxy retry in compile_joint_schema."""
+    from aie_decision.factor_ir import FactorIRError, compile_factor_ir
     from aie_decision.joint_schema import dimension_of_unit
 
     dims = {
         "fuel_unit_cost": dimension_of_unit("usd/liter"),
         "liters_per_leg": dimension_of_unit("liter"),
     }
-    ir = compile_factor_ir("test", "fuel_unit_cost * liters_per_leg", dims)
-    assert ir.output_is_dimensionless is False  # dimensional but valid
-    # Output dimension should be money/USD only (volume cancels)
-    output_dims = dict(ir.output_dimension)
-    assert "money/USD" in output_dims
-    assert "volume" not in output_dims
+    # Direct FactorIR: dimensional → must fail.
+    with pytest.raises(FactorIRError, match="dimensionless"):
+        compile_factor_ir("test", "fuel_unit_cost * liters_per_leg", dims)
+
+
+# ---------------------------------------------------------------------------
+# 3b. Malformed compound unit rejection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("malformed", [
+    "usd/",
+    "/liter",
+    "usd//liter",
+    "usd/liter/second",
+])
+def test_malformed_compound_unit_rejected(malformed):
+    """Malformed compound units MUST raise UnknownUnitError."""
+    from aie_decision.joint_schema import UnknownUnitError, dimension_of_unit
+
+    with pytest.raises(UnknownUnitError):
+        dimension_of_unit(malformed)
+
+
+def test_double_operator_compound_rejected():
+    """``usd*liter`` and ``usd/*liter`` MUST be rejected; the narrow grammar
+    only supports ``<unit>/<unit>`` without ``*`` or mixed operators."""
+    from aie_decision.joint_schema import UnknownUnitError, dimension_of_unit
+
+    for bad in ("usd*liter", "usd/*liter", "usd* /liter"):
+        with pytest.raises(UnknownUnitError):
+            dimension_of_unit(bad)
 
 
 # ---------------------------------------------------------------------------
@@ -284,22 +311,57 @@ def test_authority_cli_exits_nonzero_when_component_missing(tmp_path):
     )
 
 
-def test_authority_rejects_empty_ledger_guard_exists():
-    """The CLI code-path includes a defensive guard that returns non-zero
-    when the ledger is empty (tested via direct inspection of the exit-logic
-    condition, since wave_loop always produces at least DRAFT entries)."""
-    from aie_decision.wave_authority import run_authoritative_wave
+def test_authority_cli_exits_nonzero_when_component_not_called(tmp_path):
+    """The authority CLI MUST exit non-zero when ANY required component
+    is not called.  This test injects an illegal cross-dimension mapping
+    as the only legal mapping, forcing the joint_schema component to fail."""
+    broken = _golden_payload()
+    # Keep only the illegal mapping — a dimension mismatch must fail schema.
+    broken["mappings"] = [
+        m for m in broken["mappings"]
+        if m.get("mapping_id") == "illegitimate-time-money"
+    ]
+    # Remove expect_failure so it goes through the legal path and fails.
+    broken["mappings"][0].pop("expect_failure", None)
 
-    result = run_authoritative_wave(_golden_payload())
-    # The guard is:  if not result.ledger.get("entries"): return 4
-    # This test verifies the guard variable is reachable by confirming
-    # that our golden fixture *does* have entries (so a broken run
-    # that misses them would be caught).
-    entries = result.ledger.get("entries", ())
-    assert len(entries) > 0, (
-        "ledger is populated — the empty-ledger guard in the CLI "
-        "would return exit code 4 if entries were missing"
+    fixture_path = tmp_path / "component_fail.json"
+    fixture_path.write_text(json.dumps(broken), encoding="utf-8")
+
+    proc = _run_authority(fixture_path, tmp_path / "out")
+    assert proc.returncode != 0, (
+        f"must exit non-zero when a component is not called; got {proc.returncode}"
     )
+    # Verify the output reports components_called=false (the old bug was
+    # exit 0 with empty success despite component failure).
+    stdout = json.loads(proc.stdout)
+    assert stdout["components_called"] is False
+
+
+def test_normalize_payload_is_pure_and_non_mutating():
+    """_normalize_payload MUST NOT mutate the caller's input."""
+    from aie_decision.wave_authority import _normalize_payload
+
+    payload = _golden_payload()
+    # Snapshot axes and mappings before normalization.
+    orig_axes = payload["outcome_space"]["axes"]
+    orig_axes_snapshot = [dict(axis) for axis in orig_axes]
+    orig_mappings_snapshot = [dict(m) for m in payload["mappings"]]
+
+    normalized = _normalize_payload(payload)
+
+    # Original axes must be unchanged.
+    for idx, orig in enumerate(orig_axes_snapshot):
+        assert payload["outcome_space"]["axes"][idx] == orig, (
+            f"axes[{idx}] was mutated by _normalize_payload"
+        )
+    # Original mappings must be unchanged.
+    for idx, orig in enumerate(orig_mappings_snapshot):
+        assert payload["mappings"][idx] == orig, (
+            f"mappings[{idx}] was mutated by _normalize_payload"
+        )
+    # Normalized must be a distinct object.
+    assert normalized is not payload
+    assert normalized.get("outcome_space") is not payload.get("outcome_space")
 
 
 # ---------------------------------------------------------------------------

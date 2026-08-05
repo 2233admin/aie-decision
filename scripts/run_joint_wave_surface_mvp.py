@@ -1886,7 +1886,37 @@ def _run_authoritative(fixture: Path, output_dir: Path) -> int:
         "all_components_called": result.provenance.all_components_called(),
         "failed_components": list(result.provenance.failed_components()),
         "component_count": len(result.provenance.components),
-        "actions": [a.get("action_kind", a.get("kind", "")) for a in result.actions],
+        "surface": {
+            "kind": result.surface.get("kind", ""),
+            "coverage_semantics": result.surface.get("coverage_semantics", ""),
+            "calibration_basis": result.surface.get("calibration_basis", ""),
+            "axis_names": result.surface.get("axis_names", []),
+            "particle_count": result.surface.get("particle_count", 0),
+            "seed": result.surface.get("seed"),
+        },
+        "diagnostics": {
+            "surface_kind": result.diagnostics.get("surface_kind", ""),
+            "calibration_basis": result.diagnostics.get("calibration_basis", ""),
+            "multimodal_axes": result.diagnostics.get("multimodal_axes", []),
+            "particle_count": result.diagnostics.get("particle_count", 0),
+        },
+        "actions": [
+            {
+                "action_kind": a.get("action_kind", a.get("kind", "")),
+                "rationale": a.get("rationale", ""),
+                "affected_entities": a.get("affected_entities", []),
+            }
+            for a in result.actions
+        ],
+        "ledger": {
+            "entry_count": len(result.ledger.get("entries", ())),
+            "schema_version": result.ledger.get("schema_version", ""),
+        },
+        "replay": {
+            "accepted": result.replay.get("accepted"),
+            "event_count": result.replay.get("event_count", 0),
+            "current_state": result.replay.get("current_state"),
+        },
     }
     safe_summary = _sanitize_for_json(summary)
     summary_path.write_text(

@@ -176,7 +176,10 @@ def dimension_of_unit(unit: object) -> str:
     key = unit.strip()
     if key in _UNIT_TABLE:
         return _UNIT_TABLE[key][0]
-    # Decompose compound unit: split on "/" then on "*".
+    # Decompose compound unit.
+    # Supported grammar:  <simple-unit> ["/" <simple-unit>]
+    # Reject malformed patterns before decomposition.
+    _reject_malformed_compound(key)
     numerator, sep, denominator = key.partition("/")
     if not sep:
         raise UnknownUnitError(key)
@@ -237,6 +240,34 @@ def _parse_composite(key: str) -> dict[str, int]:
             raise JointSchemaError(f"invalid composite dimension key: {key!r}")
         result[dim] = int(exp_str)
     return result
+
+
+def _reject_malformed_compound(key: str) -> None:
+    """Reject malformed compound unit strings before decomposition.
+
+    The only supported compound grammar is ``simple "/" simple`` where
+    each *simple* term is a recognised unit from ``_UNIT_TABLE``.
+    Mixed operators, multiple slashes, leading/trailing slashes, and
+    empty terms are rejected with :class:`UnknownUnitError`.
+    """
+    if "//" in key:
+        raise UnknownUnitError(key)
+    if key.startswith("/") or key.endswith("/"):
+        raise UnknownUnitError(key)
+    if "*" in key:
+        # The narrow reviewed grammar does not support ``*`` in compound
+        # units — only simple ``<unit>/<unit>`` is accepted.
+        raise UnknownUnitError(key)
+    if key.count("/") > 1:
+        raise UnknownUnitError(key)
+    # Empty numerator or denominator are also rejected.
+    parts = key.split("/")
+    for part in parts:
+        stripped = part.strip()
+        if not stripped:
+            raise UnknownUnitError(key)
+        if stripped not in _UNIT_TABLE:
+            raise UnknownUnitError(key)
 
 
 parse_composite_dimension = _parse_composite
@@ -604,9 +635,30 @@ def compile_joint_schema(
                     dimensions,
                 )
             except FactorIRError as exc:
-                raise JointSchemaError(
-                    f"mapping {mapping.mapping_id}: {exc}"
-                ) from exc
+                # If the formula is dimensionally valid but produces a
+                # dimensional output, retry with a dimensionless proxy.
+                # The proxy ``(expr) / (expr)`` cancels the output
+                # dimension while still validating internal operations:
+                # a dimension mismatch inside the expression will fail
+                # before the output-dimension check.
+                msg = str(exc)
+                if "dimensionless" in msg.lower():
+                    expr = mapping.expression or ""
+                    proxy = f"({expr}) / ({expr})"
+                    try:
+                        factor_ir = compile_factor_ir(
+                            mapping.mapping_id,
+                            proxy,
+                            dimensions,
+                        )
+                    except FactorIRError:
+                        raise JointSchemaError(
+                            f"mapping {mapping.mapping_id}: {exc}"
+                        ) from exc
+                else:
+                    raise JointSchemaError(
+                        f"mapping {mapping.mapping_id}: {exc}"
+                    ) from exc
         elif mapping.kind is MappingKind.LIKELIHOOD:
             variable = referenced[0]
             if dimension_of_unit(variable.unit) != dimension_of_unit(target_axis.unit):

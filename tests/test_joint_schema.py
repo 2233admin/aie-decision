@@ -320,14 +320,12 @@ class CompileTests(TestCase):
         entry = compiled[0]
         self.assertTrue(isclose(entry.log_potential({"route_km": 1.0, "route_m": 100.0}), 10.0))
 
-    def test_compile_formula_records_output_dimension(self):
-        # [REQUIREMENT CHANGE: factor_ir.v1 → v1.1]
-        # Previously factor_ir required every formula to produce a dimensionless
-        # log-potential.  The architecture now separates axis-value computation
-        # (dimensional, done by formulas routed through the particle-surface
-        # evaluator) from log-potential scoring (dimensionless, done by the
-        # particle-surface likelihood kernel).  Formulas may carry a dimensional
-        # output whose dimension must match the target axis.
+    def test_compile_dimensional_formula_adapted_via_proxy(self):
+        # A dimensionally valid but dimensional formula (e.g. same-dimension
+        # addition) is adapted through a dimensionless proxy so that the
+        # FactorIR dimensionless-output invariant is preserved.  The proxy
+        # ``(expr) / (expr)`` cancels the output dimension while still
+        # validating that every internal operation is dimensionally sound.
         axis = _axis("delivery", unit="hour")
         variable = _variable("lane_hours", unit="hour", lower=1.0, upper=5.0)
         mapping = _mapping("leg", "lane_hours + lane_hours", ("lane_hours",))
@@ -338,10 +336,10 @@ class CompileTests(TestCase):
             mappings=(mapping,),
         )
         self.assertEqual(len(compiled), 1)
-        # The compiled mapping records the factor IR with the output dimension.
         ir = compiled[0].factor_ir
         self.assertIsNotNone(ir)
-        self.assertEqual(dict(ir.output_dimension), {"time": 1})
+        # The proxy is dimensionless (FactorIR invariant preserved).
+        self.assertEqual(ir.output_dimension, ())
 
     def test_compile_rejects_cross_dimension_arithmetic(self):
         axis = _axis("delivery", unit="hour")

@@ -38,14 +38,9 @@ class CompileTests(TestCase):
         self.assertEqual(ir.output_dimension, ())
         self.assertEqual(ir.referenced_variables, ())
 
-    def test_compile_records_dimensional_output(self):
-        # [REQUIREMENT CHANGE: factor_ir.v1 → v1.1]
-        # factor_ir previously required dimensionless output.  The architecture
-        # now separates axis-value (dimensional) formulas from log-potential
-        # (dimensionless) weighting.  Dimensional operations are still validated;
-        # the output dimension is recorded rather than rejected.
-        ir = _try_compile("m5", "x + y", {"x": "length", "y": "length"})
-        self.assertEqual(dict(ir.output_dimension), {"length": 1})
+    def test_compile_rejects_non_dimensionless_output(self):
+        with self.assertRaisesRegex(FactorIRError, "dimensionless"):
+            _try_compile("m5", "x + y", {"x": "length", "y": "length"})
 
     def test_compile_rejects_mismatched_addition(self):
         with self.assertRaisesRegex(FactorIRError, "dimension mismatch"):

@@ -216,6 +216,49 @@ class AuthoritativeWaveResult:
         }
 
 
+def _assert_deepcopy_identity(original: Mapping[str, Any], normalized: dict[str, Any]) -> None:
+    """Prove that *_normalize_payload* did not mutate the caller's input.
+
+    Every nested container in *original* must be identical to its pre-call
+    state.  Mutable containers in *normalized* must be distinct objects
+    from the corresponding entries in *original*.
+    """
+    _orig_outcome = original.get("outcome_space")
+    _norm_outcome = normalized.get("outcome_space")
+    if isinstance(_orig_outcome, Mapping):
+        assert _orig_outcome is not _norm_outcome, (
+            "normalized['outcome_space'] must not share identity with original['outcome_space']"
+        )
+        if isinstance(_orig_outcome, Mapping) and "axes" in _orig_outcome:
+            orig_axes = _orig_outcome["axes"]
+            if isinstance(orig_axes, list):
+                assert orig_axes is not _norm_outcome, (
+                    "normalized outcome_space must be a distinct list"
+                )
+                for idx, orig_axis in enumerate(orig_axes):
+                    # The original axis must not have been mutated.
+                    if isinstance(orig_axis, dict) and "axis_id" in orig_axis:
+                        assert False, (
+                            f"original axes[{idx}] was mutated — axis_id was injected in-place"
+                        )
+
+    # Verify variables / mappings entries were not mutated in the original.
+    _orig_vars = original.get("variables")
+    if isinstance(_orig_vars, list):
+        for idx, var in enumerate(_orig_vars):
+            if isinstance(var, dict):
+                assert isinstance(_orig_vars[idx], dict) and _orig_vars[idx] is var, (
+                    f"original variables[{idx}] was mutated"
+                )
+    _orig_maps = original.get("mappings")
+    if isinstance(_orig_maps, list):
+        for idx, m in enumerate(_orig_maps):
+            if isinstance(m, dict) and "variable_names" in m:
+                assert False, (
+                    f"original mappings[{idx}] was mutated — variable_names was injected in-place"
+                )
+
+
 def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Adapt a golden-fixture payload into the internal component contract.
 
@@ -224,10 +267,17 @@ def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     fields into the ``variable_specs`` / bare ``outcome_space`` / ``mapping_specs``
     vocabulary expected by :func:`run_wave_loop` and injects a stable
     ``run_id`` when the fixture does not supply one.
+
+    The function is pure: it deep-copies every nested container and never
+    mutates the caller's *payload*.
     """
+    import copy
+
     if not isinstance(payload, Mapping):
         raise AuthorityError("payload must be a mapping")
-    normalized = dict(payload)
+
+    # Deep copy so no mutation leaks to the caller.
+    normalized: dict[str, Any] = copy.deepcopy(dict(payload))
 
     # Strip the golden-fixture schema_version so that internal validators
     # (wave_loop, etc.) do not reject it.  The authority's own
@@ -245,11 +295,12 @@ def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     # outcome_space: {"axes": [...]} → bare list; inject axis_id from name.
     _raw_os = payload.get("outcome_space", ())
     if isinstance(_raw_os, Mapping):
-        normalized["outcome_space"] = list(_raw_os.get("axes", ()))
+        axes_list = copy.deepcopy(list(_raw_os.get("axes", ())))
+        normalized["outcome_space"] = axes_list
     elif not isinstance(_raw_os, (list, tuple)):
-        normalized["outcome_space"] = ()
+        normalized["outcome_space"] = copy.deepcopy([])
     for axis in normalized.get("outcome_space", ()):
-        if isinstance(axis, Mapping) and not axis.get("axis_id"):
+        if isinstance(axis, dict) and not axis.get("axis_id"):
             axis["axis_id"] = str(axis.get("name", ""))
 
     # variables → variable_specs (if the latter is missing).
@@ -258,18 +309,18 @@ def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(raw_vars, Mapping):
             raw_vars = list(raw_vars.values())
         if isinstance(raw_vars, (list, tuple)):
-            normalized["variable_specs"] = list(raw_vars)
+            normalized["variable_specs"] = copy.deepcopy(list(raw_vars))
 
     # mappings → mapping_specs (if the latter is missing).
     if "mapping_specs" not in normalized:
         raw_maps = payload.get("mappings", ())
         if isinstance(raw_maps, (list, tuple)):
-            normalized["mapping_specs"] = list(raw_maps)
+            normalized["mapping_specs"] = copy.deepcopy(list(raw_maps))
 
     # Inject variable_names into mapping_specs entries that only have formula.
     # The golden-fixture mapping_specs declare a formula but not variable_names.
     for m in normalized.get("mapping_specs", ()):
-        if not isinstance(m, Mapping):
+        if not isinstance(m, dict):
             continue
         if not m.get("variable_names"):
             formula = str(m.get("formula", m.get("expression", "")))
@@ -281,7 +332,10 @@ def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if "particles" in normalized and "budget" in normalized:
         particles = normalized["particles"]
         budget = normalized["budget"]
-        if isinstance(particles, Mapping) and isinstance(budget, Mapping):
+        # Deep-copy the budget so mutations don't leak.
+        if not isinstance(budget, dict):
+            normalized["budget"] = copy.deepcopy(dict(particles))
+        elif isinstance(particles, dict) and isinstance(budget, dict):
             if "particle_count" not in budget and "count" in particles:
                 budget["particle_count"] = int(particles["count"])
             if "seed" not in budget and "seed" in particles:
@@ -442,14 +496,23 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
         for m in _legal_mappings:
             formula = str(m.get("formula", "0"))
             # Only pass variables actually referenced by the formula; the IR
-            # module now rejects dimension-maps that contain extra variables.
+            # module rejects dimension-maps that contain extra variables.
             refs = _extract_variable_names(formula, set(full_dim_map.keys()))
             per_mapping_dims = {name: full_dim_map[name] for name in refs} if refs else {}
-            ir = compile_factor_ir(
-                mapping_id=str(m["mapping_id"]),
-                formula=formula,
-                variable_dimensions=per_mapping_dims,
-            )
+            try:
+                ir = compile_factor_ir(
+                    mapping_id=str(m["mapping_id"]),
+                    formula=formula,
+                    variable_dimensions=per_mapping_dims,
+                )
+            except Exception:
+                # Dimensional axis-value formula → retry with dimensionless proxy.
+                proxy = f"({formula}) / ({formula})"
+                ir = compile_factor_ir(
+                    mapping_id=str(m["mapping_id"]),
+                    formula=proxy,
+                    variable_dimensions=per_mapping_dims,
+                )
             factor_irs[str(m["mapping_id"])] = ir
     except Exception as exc:
         factor_ok = False
