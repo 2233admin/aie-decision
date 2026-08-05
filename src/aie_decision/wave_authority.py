@@ -29,6 +29,7 @@ from .factor_ir import (
     FACTOR_IR_VERSION,
     DeterministicTransform,
     FactorIR,
+    FactorIRError,
     compile_axis_transform,
     compile_factor_ir,
 )
@@ -409,19 +410,75 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
         return prov
 
     # -- 1. Joint schema validation ------------------------------------------
-    # Separate legal mappings from expected-to-fail ones so that illegal-unit
-    # golden-fixture entries do not abort the whole schema gate.
+    # Separate legal mappings from expected-to-fail ones.  Each
+    # expected-failure mapping is **actually compiled** through both the
+    # FactorIR and axis-transform dimension checkers; it must genuinely fail.
+    # If an expect_failure mapping unexpectedly validates, the gate fails
+    # closed.  Evidence captures the actual operand dimensions, not a
+    # hard-coded "dimensionless" placeholder.
     _legal_mappings: list[dict[str, Any]] = []
     _staged_failures: list[dict[str, Any]] = []
+    full_dim_map = {str(var["name"]): dimension_of_unit(str(var["unit"])) for var in raw_variables}
+    axis_by_id: dict[str, dict[str, Any]] = {
+        str(axis.get("axis_id", axis.get("name", ""))): dict(axis)
+        for axis in outcome_axes_raw
+    }
     for m in raw_mappings:
         if m.get("expect_failure"):
+            mapping_id = str(m["mapping_id"])
+            formula = str(m.get("formula", "0"))
+            expected_unit = str(m.get("expected_unit", "unknown"))
+            refs = _extract_variable_names(formula, set(full_dim_map.keys()))
+            per_mapping_dims = {name: full_dim_map[name] for name in refs} if refs else {}
+            # Derive the actual operand dimensions from the formula variables.
+            operand_desc = _format_dimensions(formula, per_mapping_dims)
+            result_axis = str(
+                m.get("result_axis")
+                or (m.get("output_axes", [""])[0] if m.get("output_axes") else "")
+            )
+            target_axis = axis_by_id.get(result_axis, {})
+            target_unit = str(target_axis.get("unit", "dimensionless"))
+            axis_dim = dimension_of_unit(target_unit)
+            from .joint_schema import parse_composite_dimension
+            axis_dim_map = parse_composite_dimension(axis_dim)
+            target_dim = next(iter(axis_dim_map.keys())) if axis_dim_map else "dimensionless"
+            # Actually validate: both FactorIR and axis-transform compilation
+            # MUST fail.  If either succeeds, fail closed immediately.
+            _factor_ok = True
+            _factor_err = ""
+            try:
+                compile_factor_ir(mapping_id=mapping_id, formula=formula, variable_dimensions=per_mapping_dims)
+                # Unexpected success — fail closed.
+                _factor_ok = False
+                _factor_err = f"expected-failure mapping {mapping_id!r} should have failed FactorIR but compiled successfully"
+            except FactorIRError as exc:
+                _factor_err = str(exc)
+            if not _factor_ok:
+                raise AuthorityError(_factor_err)
+            _xform_ok = True
+            _xform_err = ""
+            try:
+                compile_axis_transform(
+                    mapping_id=mapping_id,
+                    formula=formula,
+                    variable_dimensions=per_mapping_dims,
+                    target_axis_dimension=target_dim,
+                )
+                _xform_ok = False
+                _xform_err = f"expected-failure mapping {mapping_id!r} should have failed axis-transform but compiled successfully"
+            except FactorIRError as exc:
+                _xform_err = str(exc)
+            if not _xform_ok:
+                raise AuthorityError(_xform_err)
+            # Both genuinely failed — record evidence with actual dimensions.
+            evidence_msg = _xform_err or _factor_err or "unknown dimension failure"
             _staged_failures.append({
-                "mapping_id": str(m["mapping_id"]),
+                "mapping_id": mapping_id,
                 "code": "expected_failure",
-                "message": f"mapping {m['mapping_id']} declared expect_failure={m['expect_failure']}",
+                "message": evidence_msg,
                 "operand": "formula",
-                "operand_unit": "dimensionless",
-                "expected_unit": str(m.get("expected_unit", "unknown")),
+                "operand_unit": operand_desc,
+                "expected_unit": expected_unit,
             })
         else:
             _legal_mappings.append(m)
@@ -497,6 +554,9 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
     # Compile every legal mapping into a typed CompiledIR that discriminates
     # FactorIR (is_factor=True, dimensionless → weight) from
     # DeterministicTransform (is_factor=False, dimensional → axis value).
+    # Mappings with explicit output_axes are axis transforms by intent;
+    # they are tried as compile_axis_transform first, even when the formula
+    # is dimensionless (e.g. magnitude-fuel: dimensionless → dimensionless).
     factor_ok = True
     factor_error = None
     compiled_ir_trees: dict[str, CompiledIR] = {}
@@ -518,8 +578,37 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
             )
             target_axis = axis_by_id.get(result_axis, {})
             target_unit = str(target_axis.get("unit", "dimensionless"))
+            has_explicit_output = bool(m.get("output_axes"))
+            # Resolve target dimension for axis-transform compilation.
+            axis_dim = dimension_of_unit(target_unit)
+            from .joint_schema import parse_composite_dimension
+            axis_dim_map = parse_composite_dimension(axis_dim)
+            if axis_dim_map:
+                target_dim = next(iter(axis_dim_map.keys()))
+            else:
+                target_dim = "dimensionless"
+            # Mappings with explicit output_axes are axis transforms by intent.
+            # Try compile_axis_transform first; fall back to FactorIR only when
+            # the axis transform genuinely cannot apply.
+            if has_explicit_output:
+                try:
+                    xform = compile_axis_transform(
+                        mapping_id=mapping_id,
+                        formula=formula,
+                        variable_dimensions=per_mapping_dims,
+                        target_axis_dimension=target_dim,
+                    )
+                    compiled_ir_trees[mapping_id] = CompiledIR(
+                        mapping_id=mapping_id,
+                        tree=xform.tree,
+                        is_factor=False,
+                    )
+                    continue
+                except Exception:
+                    # Axis-transform failed — try FactorIR as fallback.
+                    pass
             try:
-                # Try dimensionless FactorIR first.
+                # Try dimensionless FactorIR.
                 ir = compile_factor_ir(
                     mapping_id=mapping_id,
                     formula=formula,
@@ -531,18 +620,14 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
                     is_factor=True,
                 )
             except Exception:
-                # Dimensional formula — validate as axis-transform against
-                # the target axis dimension.
+                # FactorIR failed — try axis-transform (for non-explicit-output
+                # mappings or as a second attempt).
                 try:
-                    axis_dim = dimension_of_unit(target_unit)
-                    from .joint_schema import parse_composite_dimension
-                    axis_dim_map = parse_composite_dimension(axis_dim)
                     if not axis_dim_map or len(axis_dim_map) != 1:
                         raise FactorIRError(
                             f"axis {result_axis} has composite dimension {axis_dim_map}; "
                             f"cannot target axis-transform"
                         )
-                    target_dim = next(iter(axis_dim_map.keys()))
                     xform = compile_axis_transform(
                         mapping_id=mapping_id,
                         formula=formula,
@@ -701,6 +786,18 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
 # ---------------------------------------------------------------------------
 # Helpers: convert JSON-friendly dicts to package domain models
 # ---------------------------------------------------------------------------
+
+
+def _format_dimensions(formula: str, variable_dims: dict[str, str]) -> str:
+    """Format per-variable dimension keys for structured failure evidence.
+
+    Returns a string like ``"lane_hours→time, fuel_unit_cost→money/USD:1;volume:-1"``
+    that identifies the actual dimensions of each operand in the formula.
+    """
+    if not variable_dims:
+        return "dimensionless"
+    parts = [f"{name}→{dim}" for name, dim in sorted(variable_dims.items())]
+    return ", ".join(parts)
 
 
 def __to_ps_axis(axis: Mapping[str, Any]) -> Any:

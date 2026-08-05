@@ -134,25 +134,33 @@ class DeterministicTransform:
             raise FactorIRError(
                 "DeterministicTransform.referenced_variables must match input_dimensions keys"
             )
-        # Output dimension must be non-empty and must match exactly one
-        # dimension whose key equals target_axis_dimension.
+        # Output dimension must match target_axis_dimension.  When the target
+        # axis is dimensionless, an empty output dimension is valid
+        # (dimensionless → dimensionless transform).
         od = dict(self.output_dimension)
-        if not od:
-            raise FactorIRError(
-                "DeterministicTransform output must be dimensional (matching target axis), "
-                f"not dimensionless; use FactorIR for dimensionless formulas"
-            )
-        if len(od) != 1:
-            raise FactorIRError(
-                f"DeterministicTransform output must resolve to exactly one dimension; "
-                f"got {od}"
-            )
-        resolved = next(iter(od.keys()))
-        if resolved != self.target_axis_dimension:
-            raise FactorIRError(
-                f"DeterministicTransform output dimension {resolved!r} does not match "
-                f"target axis dimension {self.target_axis_dimension!r}"
-            )
+        if self.target_axis_dimension == DIMENSIONLESS:
+            if od:
+                raise FactorIRError(
+                    "DeterministicTransform with dimensionless target axis "
+                    f"must have empty output_dimension; got {od}"
+                )
+        else:
+            if not od:
+                raise FactorIRError(
+                    "DeterministicTransform output must be dimensional (matching target axis), "
+                    f"not dimensionless; use FactorIR for dimensionless formulas"
+                )
+            if len(od) != 1:
+                raise FactorIRError(
+                    f"DeterministicTransform output must resolve to exactly one dimension; "
+                    f"got {od}"
+                )
+            resolved = next(iter(od.keys()))
+            if resolved != self.target_axis_dimension:
+                raise FactorIRError(
+                    f"DeterministicTransform output dimension {resolved!r} does not match "
+                    f"target axis dimension {self.target_axis_dimension!r}"
+                )
 
     def evaluate(self, values: Mapping[str, float]) -> float:
         """Evaluate the transform over one particle and return the axis value."""
@@ -178,30 +186,48 @@ def compile_axis_transform(
 
     This is the dimensional counterpart of :func:`compile_factor_ir`.  Where
     that function requires a dimensionless output, this one requires the
-    output to resolve to exactly the target axis dimension.
+    output to resolve to exactly the target axis dimension — including the
+    special case where both the formula output and the target axis are
+    dimensionless (e.g. ``regime_factor * severity_factor`` targeting a
+    dimensionless ``magnitude`` axis).
     """
 
     tree = _parse_restricted(formula)
     signature = _dimension_signature(tree, dict(variable_dimensions))
-    if not signature:
-        raise FactorIRError(
-            f"axis-transform formula output is dimensionless; "
-            f"use compile_factor_ir for dimensionless formulas"
-        )
-    if len(signature) != 1:
-        raise FactorIRError(
-            "axis-transform output must resolve to exactly one dimension; got "
-            + ", ".join(
+    if target_axis_dimension == DIMENSIONLESS:
+        # Dimensionless axis — the formula must also produce a dimensionless
+        # output.  A non-empty signature means the formula is dimensional.
+        if signature:
+            dimensional = ", ".join(
                 f"{dim}^{'+' if exp > 0 else ''}{exp}"
                 for dim, exp in sorted(signature.items())
             )
-        )
-    resolved = next(iter(signature.keys()))
-    if resolved != target_axis_dimension:
-        raise FactorIRError(
-            f"axis-transform output dimension {resolved!r} does not match "
-            f"target axis dimension {target_axis_dimension!r}"
-        )
+            raise FactorIRError(
+                f"axis-transform output is dimensional ({dimensional}); "
+                f"expected dimensionless for dimensionless target axis {target_axis_dimension!r}"
+            )
+        # Empty signature → output is dimensionless → matches dimensionless axis.
+        resolved = DIMENSIONLESS
+    else:
+        if not signature:
+            raise FactorIRError(
+                f"axis-transform formula output is dimensionless; "
+                f"use compile_factor_ir for dimensionless formulas"
+            )
+        if len(signature) != 1:
+            raise FactorIRError(
+                "axis-transform output must resolve to exactly one dimension; got "
+                + ", ".join(
+                    f"{dim}^{'+' if exp > 0 else ''}{exp}"
+                    for dim, exp in sorted(signature.items())
+                )
+            )
+        resolved = next(iter(signature.keys()))
+        if resolved != target_axis_dimension:
+            raise FactorIRError(
+                f"axis-transform output dimension {resolved!r} does not match "
+                f"target axis dimension {target_axis_dimension!r}"
+            )
     references = _collect_references(tree)
     missing = [name for name in references if name not in variable_dimensions]
     if missing:

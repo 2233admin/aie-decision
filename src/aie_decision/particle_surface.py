@@ -518,11 +518,11 @@ def compile_particle_surface(request: SurfaceRequest) -> ParticleSurface:
             )
             if compiled.is_factor:
                 # FactorIR — dimensionless log-potential weight only.
-                # Add the contribution to log_weights; do NOT overwrite axis
-                # values (the axis column retains its prior value, which may
-                # be zero or computed by a DeterministicTransform).
+                # Set the contribution; it is accumulated exactly once at the
+                # loop tail.  Do NOT overwrite axis values (the axis column
+                # retains its prior value, which may be zero or computed by a
+                # DeterministicTransform).
                 mapping_contribution = contribution
-                log_potential = log_potential + mapping_contribution
             else:
                 # DeterministicTransform — axis-value computation only.
                 # Write the axis particles; zero weight contribution.

@@ -511,3 +511,91 @@ def test_illegal_mappings_not_in_particle_surface():
     staged_ids = {f["mapping_id"] for f in result.staged_failures}
     assert "illegitimate-time-constant" in staged_ids
     assert "illegitimate-time-money" in staged_ids
+
+
+# ---------------------------------------------------------------------------
+# 9. Magnitude axis nonzero + bimodality (dimensionless → dimensionless xform)
+# ---------------------------------------------------------------------------
+
+
+def test_golden_magnitude_axis_has_nonzero_and_bimodal_particles():
+    """The magnitude axis (magnitude-fuel: regime_factor * severity_factor)
+    MUST produce nonzero particles and preserve bimodality.  The formula
+    is dimensionless → dimensionless and must compile as a
+    DeterministicTransform (is_factor=False) because it has explicit
+    output_axes=['magnitude']."""
+    from aie_decision.wave_authority import run_authoritative_wave
+
+    result = run_authoritative_wave(_golden_payload())
+
+    # Verify magnitude is in multimodal_axes.
+    diag = result.diagnostics
+    multimodal = set(diag.get("multimodal_axes", []))
+    assert "magnitude" in multimodal, (
+        f"magnitude axis must be multimodal; got {multimodal}"
+    )
+
+    # Verify the compiled IR for magnitude-fuel is a DeterministicTransform
+    # (is_factor=False), not a FactorIR.
+    factor_prov = [
+        c for c in result.provenance.components if c.component == "factor_ir"
+    ]
+    assert len(factor_prov) == 1
+    assert factor_prov[0].called is True, (
+        "factor_ir component must be called successfully"
+    )
+
+    # surface.mapping_ids includes magnitude-fuel.
+    mapping_ids = set(result.surface.get("mapping_ids", []))
+    assert "magnitude-fuel" in mapping_ids
+
+
+def test_expected_failure_operand_unit_is_not_hardcoded_dimensionless():
+    """Expected-failure mappings MUST be actually validated through the
+    dimension checker.  operand_unit MUST expose the real operand dimensions,
+    not a hardcoded 'dimensionless' placeholder.
+
+    - illegitimate-time-constant: must identify the dimensionless constant
+      vs time conflict.
+    - illegitimate-time-money: must expose the actual money/volume dimension.
+    """
+    from aie_decision.wave_authority import run_authoritative_wave
+
+    result = run_authoritative_wave(_golden_payload())
+
+    failures_by_id = {f["mapping_id"]: f for f in result.staged_failures}
+
+    # illegitimate-time-constant: lane_hours + 3
+    tc = failures_by_id["illegitimate-time-constant"]
+    assert tc["operand_unit"] != "dimensionless", (
+        "operand_unit must NOT be hardcoded 'dimensionless'; must identify "
+        f"the time-vs-constant conflict. Got: {tc['operand_unit']!r}"
+    )
+    assert "time" in tc["operand_unit"], (
+        f"operand_unit must reference the time dimension; got {tc['operand_unit']!r}"
+    )
+    assert tc["expected_unit"] == "hour"
+
+    # illegitimate-time-money: lane_hours + fuel_unit_cost
+    tm = failures_by_id["illegitimate-time-money"]
+    assert tm["operand_unit"] != "dimensionless", (
+        "operand_unit must NOT be hardcoded 'dimensionless'; must expose "
+        f"actual money/volume dimension. Got: {tm['operand_unit']!r}"
+    )
+    assert "money/USD" in tm["operand_unit"] or "money" in tm["operand_unit"], (
+        f"operand_unit must expose money dimension; got {tm['operand_unit']!r}"
+    )
+    assert "volume" in tm["operand_unit"], (
+        f"operand_unit must expose volume dimension; got {tm['operand_unit']!r}"
+    )
+    assert "time" in tm["operand_unit"], (
+        f"operand_unit must expose time dimension; got {tm['operand_unit']!r}"
+    )
+    assert tm["expected_unit"] == "hour"
+
+    # Both failures must carry real error messages from the dimension checker.
+    for fid in ("illegitimate-time-constant", "illegitimate-time-money"):
+        msg = failures_by_id[fid]["message"]
+        assert "dimension mismatch" in msg.lower() or "dimension" in msg.lower(), (
+            f"{fid} message must be from actual dimension check; got {msg!r}"
+        )

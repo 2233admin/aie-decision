@@ -606,3 +606,63 @@ def test_zero_valued_transform_is_safe():
     # Normalised weights must sum to 1.0 (uniform since all weights are 0).
     weights = normalise_weights(surface)
     assert weights.sum() == pytest.approx(1.0, abs=1e-9)
+
+
+def test_factor_ir_log_weights_exactly_equal_expression_values():
+    """FactorIR contribution must be accumulated exactly once — log_weights
+    must equal the compiled factor expression values, not double-accumulated."""
+    seed = 123
+    tree_factor = _compile_formula_ast("conversion_rate * 2")
+    tree_axis = _compile_formula_ast("visitors")
+
+    compiled = {
+        "axis-xform": CompiledIR("axis-xform", tree_axis, is_factor=False),
+        "weight-factor": CompiledIR("weight-factor", tree_factor, is_factor=True),
+    }
+
+    request = SurfaceRequest(
+        question_id="q-exact",
+        seed=seed,
+        particle_count=64,
+        axes=(OutcomeAxis("x", "CNY"),),
+        variables=(
+            VariableSpec("visitors", "count/day", 800.0, 1200.0),
+            VariableSpec("conversion_rate", "ratio", 0.08, 0.12),
+        ),
+        mappings=(
+            MappingSpec(
+                mapping_id="axis-xform",
+                kind=MappingKind.FORMULA,
+                variables=("visitors",),
+                result_axis="x",
+                expression="visitors",
+            ),
+            MappingSpec(
+                mapping_id="weight-factor",
+                kind=MappingKind.FORMULA,
+                variables=("conversion_rate",),
+                result_axis="x",
+                expression="conversion_rate * 2",
+            ),
+        ),
+        compiled_ir_trees=compiled,
+    )
+
+    surface = compile_particle_surface(request)
+
+    # Recompute expected factor contribution manually.
+    sampler = np.random.default_rng(np.random.SeedSequence(seed).spawn(2)[0])
+    unit_samples = sampler.random((64, 2))
+    var_bounds = np.array([(800.0, 1200.0), (0.08, 0.12)], dtype=float)
+    samples = var_bounds[:, 0] + unit_samples * (var_bounds[:, 1] - var_bounds[:, 0])
+    expected_factor = samples[:, 1] * 2.0  # conversion_rate * 2
+
+    # log_weights must exactly equal the factor expression values
+    # (no double accumulation, no transformation).
+    assert surface.log_weights == pytest.approx(expected_factor, abs=1e-12), (
+        "FactorIR log_weights must exactly equal compiled expression values"
+    )
+
+    # The axis values must come from the DeterministicTransform only.
+    expected_axis = samples[:, 0]  # visitors
+    assert surface.particles[:, 0] == pytest.approx(expected_axis, abs=1e-12)
