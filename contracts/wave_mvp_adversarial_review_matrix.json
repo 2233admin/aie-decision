@@ -1,0 +1,73 @@
+{
+  "schema_version": "wave-mvp-adversarial-review-matrix.v1",
+  "capability": "contract-driven-wave-mvp",
+  "review_tasks": ["4.2", "3.3-requirement-side"],
+  "reviewer": "independent-adversarial",
+  "generated_at": "2026-08-05T00:00:00Z",
+  "scenarios": [
+    {
+      "id": "adversarial-illegal-unit-structured-failure",
+      "requirement": "Tests judge behavior and invariants — Illegal unit mapping",
+      "adversarial_angle": "Verify that a unit_mismatch failure carries ALL required fields (mapping_id, code, operand, operand_unit, expected_unit) with non-empty values, not just that it exists.",
+      "test": "test_adversarial_illegal_unit_carries_complete_structured_error",
+      "expected": "Each illegal mapping failure contains mapping_id, code=unit_mismatch, operand, operand_unit, expected_unit, all non-empty",
+      "failure_semantics": "Missing field or empty value → test fails with assertion naming the deficient field"
+    },
+    {
+      "id": "adversarial-missing-adapter-fails-both-boundaries",
+      "requirement": "Required boundaries fail closed — Required adapter is unavailable",
+      "adversarial_angle": "Remove EACH required adapter independently (not just search_replay) and verify both trigger integration_unavailable. Also verify the error message names the specific missing adapter.",
+      "test": "test_adversarial_each_missing_adapter_fails_independently",
+      "expected": "Missing candidate_generation → integration_unavailable with 'candidate_generation' in message. Missing search_replay → integration_unavailable with 'search_replay' in message.",
+      "failure_semantics": "If only one adapter is tested or the error message is generic, the test fails"
+    },
+    {
+      "id": "adversarial-provenance-declared-not-invoked",
+      "requirement": "One authoritative evaluator path — CLI uses the authoritative path",
+      "adversarial_angle": "The summary declares compatibility flags as True, but does the runner actually call the adapter functions? Instrument the adapter call sites and verify invocation, not just declaration.",
+      "test": "test_adversarial_provenance_invocation_not_just_declaration",
+      "expected": "The search_replay adapter function is actually called during run_mvp execution",
+      "failure_semantics": "If the adapter is declared available but never invoked → test fails"
+    },
+    {
+      "id": "adversarial-oracle-authoritative-cross-path-parity",
+      "requirement": "One authoritative evaluator path — Oracle disagrees with the authoritative path",
+      "adversarial_angle": "Feed equivalent minimal inputs to BOTH the package evaluator (wave_loop.run_wave_loop) and the fixture runner (run_joint_wave_surface_mvp.run_mvp). Compare surface semantics, action kinds, and terminal status. Task 3.3: cross-path parity test.",
+      "test": "test_adversarial_cross_path_parity_package_vs_runner",
+      "expected": "Both evaluators produce consistent surface_kind, terminal status, and action vocabulary for equivalent inputs",
+      "failure_semantics": "If implementations produce different surface kinds, statuses, or action kinds → structured parity error. If schemas are incompatible → test fails honestly documenting the gap"
+    },
+    {
+      "id": "adversarial-probability-claim-without-calibration",
+      "requirement": "Required boundaries fail closed — Uncalibrated probability is requested",
+      "adversarial_angle": "Verify there is NO code path where a surface with calibration='unmeasured' or surface_kind='possibility_surface' is presented as or convertible to a calibrated probability claim. Scan all surface-producing code paths.",
+      "test": "test_adversarial_no_uncalibrated_surface_labeled_as_probability",
+      "expected": "Every surface produced by the runner carries surface_kind='possibility_surface' and calibration='unmeasured'",
+      "failure_semantics": "If any surface is labeled 'probability_surface' or carries calibration other than 'unmeasured' → test fails"
+    },
+    {
+      "id": "adversarial-budget-exhaustion-boundary",
+      "requirement": "Tests judge behavior and invariants — Budget exhaustion",
+      "adversarial_angle": "Test with deliberately constrained budget (max_rounds=1, non-bimodal input) and verify the result is budget-exhausted, NOT converged or result-found. Also test edge: max_rounds=0 behavior.",
+      "test": "test_adversarial_budget_exhaustion_is_not_converged",
+      "expected": "With max_rounds=1 and unimodal input, status is budget-exhausted, not result-found or converged",
+      "failure_semantics": "If exhausted budget is reported as converged or accepted → test fails"
+    },
+    {
+      "id": "adversarial-action-order-determinism",
+      "requirement": "Tests judge behavior and invariants — Action ordering",
+      "adversarial_angle": "Verify that actions are emitted in deterministic, repeatable order (same seed → same action sequence). Also verify that changing the seed changes actions (not a no-op seed).",
+      "test": "test_adversarial_action_order_is_deterministic_and_seed_sensitive",
+      "expected": "Same seed → identical action kinds in order. Different seed → surface or action differences possible (non-trivial seeding).",
+      "failure_semantics": "If same seed produces different action order → test fails (non-deterministic)."
+    },
+    {
+      "id": "adversarial-replay-identity-tamper-detection",
+      "requirement": "Tests judge behavior and invariants — Replay identity",
+      "adversarial_angle": "Take a valid ledger, tamper with one byte (e.g., change a round_index or reason string), and verify replay detection rejects it. Tamper with a payload_hash and verify hash mismatch.",
+      "test": "test_adversarial_replay_identity_detects_tampered_ledger",
+      "expected": "Replaying a tampered ledger raises WaveLoopError or SearchReplayError with hash/sequence mismatch",
+      "failure_semantics": "If tampered ledger is accepted as valid → test fails"
+    }
+  ]
+}

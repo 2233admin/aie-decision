@@ -1,0 +1,15 @@
+{
+  "tool": "sentrux-lite",
+  "saved_at": "2026-08-04T14:02:01.8772612Z",
+  "path": "C:\\Users\\Administrator\\orca\\aie-decision",
+  "quality_signal": 9427,
+  "coupling_score": 54.07,
+  "cycle_count": 0,
+  "god_file_count": 1,
+  "complex_fn_count": 0,
+  "cross_module_edges": 292,
+  "total_import_edges": 292,
+  "files": 54,
+  "functions": 479,
+  "max_complexity": 17
+}

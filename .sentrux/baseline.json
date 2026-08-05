@@ -1,0 +1,44 @@
+{
+  "engine": {
+    "id": "sentrux-native",
+    "version": "2.2.0"
+  },
+  "godFiles": [
+    {
+      "functions": 22,
+      "loc": 852,
+      "path": "src/aie_decision/wave_authority.py",
+      "rule": "loc>800"
+    },
+    {
+      "functions": 43,
+      "loc": 432,
+      "path": "tests/test_joint_schema.py",
+      "rule": "functions>25&&loc>400"
+    },
+    {
+      "functions": 26,
+      "loc": 573,
+      "path": "tests/test_particle_surface.py",
+      "rule": "functions>25&&loc>400"
+    }
+  ],
+  "metrics": {
+    "branch_density_per_fn": 13,
+    "complex_fn_count": 0,
+    "coupling_score": 66.2,
+    "cross_module_edges": 523,
+    "cycle_count": 0,
+    "files": 79,
+    "functions": 963,
+    "god_file_count": 3,
+    "import_modeled_files": 79,
+    "max_complexity": 13,
+    "quality_signal": 9110,
+    "total_import_edges": 523
+  },
+  "savedAt": 1785928529,
+  "schema": "code-intel-sentrux-baseline.v5",
+  "scope": ".",
+  "sourceCommit": "70a5b397825b266984f00e69726004cc671207d2"
+}

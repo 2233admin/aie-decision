@@ -7,6 +7,9 @@ name = "aie-decision"
 version = "0.3.0"
 description = "Auditable runtime for AI-directed recursive Fermi decomposition"
 requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+]
 
 [project.scripts]
 aie-decision = "aie_decision.fermi_cli:main"
