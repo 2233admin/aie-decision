@@ -1815,6 +1815,72 @@ def _load_payload(path: Path) -> dict[str, Any]:
     return document
 
 
+def _ledger_is_authoritative(ledger: Mapping[str, Any]) -> bool:
+    """Return True when the ledger was produced by the authoritative package evaluator.
+
+    Authority-ledger entries carry stable_id (from AnalysisLedger.export());
+    oracle-ledger entries carry event_id without stable_id.
+    """
+    entries = ledger.get("entries", ())
+    if not isinstance(entries, (list, tuple)) or not entries:
+        return False
+    first_entry = entries[0]
+    if not isinstance(first_entry, Mapping):
+        return False
+    return "stable_id" in first_entry and "event_id" not in first_entry
+
+
+def _normalize_ledger_for_comparison(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy with non-deterministic fields removed so two runs compare equal.
+
+    AnalysisLedger.export() includes recorded_at with a wall-clock
+    timestamp that differs across invocations.  This normaliser strips those
+    fields so the deterministic content of two authority runs can be compared
+    without weakening the semantic invariants (payload hashes, sequences,
+    state transitions) that replay_wave_ledger already enforces.
+    """
+    import copy
+
+    normalized: dict[str, Any] = copy.deepcopy(ledger)
+    for entry in normalized.get("entries", ()):
+        if isinstance(entry, dict):
+            entry.pop("recorded_at", None)
+    return normalized
+
+
+def _run_authoritative_and_compare(
+    payload: Mapping[str, Any], ledger: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Run the authoritative evaluator twice and verify the ledger matches.
+
+    Returns the re-computed ledger on success; returns ledger_mismatch or
+    non_deterministic status dicts on failure.
+    """
+    authority = _get_authority_module()
+    first_result = authority["run"](payload)
+    first_ledger = _sanitize_for_json(first_result.to_dict()["ledger"])
+    if _normalize_ledger_for_comparison(first_ledger) != _normalize_ledger_for_comparison(ledger):
+        return {
+            "status": "ledger_mismatch",
+            "ledger_hash_first": _payload_hash(first_ledger),
+            "ledger_hash_supplied": _payload_hash(ledger),
+        }
+    second_result = authority["run"](payload)
+    second_ledger = _sanitize_for_json(second_result.to_dict()["ledger"])
+    if _normalize_ledger_for_comparison(second_ledger) != _normalize_ledger_for_comparison(first_ledger):
+        return {
+            "status": "non_deterministic",
+            "iterations": [],
+        }
+    return {
+        "status": "ok",
+        "run_id": first_result.run_id,
+        "iterations": [],
+        "final_status": "result-found" if first_result.decision_value.get("accepted") else "insufficient-information",
+        "ledger_hash": _payload_hash(first_ledger),
+    }
+
+
 def _run_replay(ledger_path: Path, fixture_path: Path | None = None) -> dict[str, Any]:
     document = json.loads(ledger_path.read_text(encoding="utf-8"))
     if not isinstance(document, Mapping):
@@ -1840,6 +1906,18 @@ def _run_replay(ledger_path: Path, fixture_path: Path | None = None) -> dict[str
     payload["particles"] = dict(payload.get("particles", {}))
     payload["particles"].setdefault("count", 1)
     payload["particles"].setdefault("seed", 0)
+
+    # Route to the evaluator that produced the ledger.
+    if _ledger_is_authoritative(ledger):
+        try:
+            return _run_authoritative_and_compare(payload, ledger)
+        except Exception as exc:
+            return {
+                "status": "ledger_mismatch",
+                "error": str(exc),
+            }
+
+    # Oracle path (existing behavior).
     first = run_mvp(payload)
     if first.ledger != ledger:
         return {
@@ -1860,8 +1938,6 @@ def _run_replay(ledger_path: Path, fixture_path: Path | None = None) -> dict[str
         "final_status": first.status,
         "ledger_hash": _payload_hash(first.ledger),
     }
-
-
 def _run_authoritative(fixture: Path, output_dir: Path) -> int:
     """Run through the authoritative package evaluator and write evidence."""
     authority = _get_authority_module()
