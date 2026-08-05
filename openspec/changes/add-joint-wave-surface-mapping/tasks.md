@@ -89,9 +89,11 @@
 
 ## 10. 验收与发布门
 
-- [ ] 10.1 运行全部 schema、golden、property、integration 和 replay tests，归档失败分类与测试报告
+- [x] 10.1 运行全部 schema、golden、property、integration 和 replay tests，归档失败分类与测试报告
+  - clean integration worktree：`378 passed`；authority CLI 与 ledger replay 另行完成黑盒验收。
 - [ ] 10.2 运行 OpenSpec strict validation，并逐项映射三个 capability spec 的 scenario 到可执行测试
-- [ ] 10.3 运行 Code Intel、Sentrux check_rules/test_gaps 和性能回归，保存权威 artifacts
+- [x] 10.3 运行 Code Intel、Sentrux check_rules/test_gaps 和性能回归，保存权威 artifacts
+  - ambient Code Intel normal exit 0；Sentrux rules/ratchet 通过；test_gaps 最大 gap 为 scripts=9，作为后置测试映射债务保留。
 - [ ] 10.4 完成 possibility/probability 术语、unknown 状态、provenance 和 failure semantics 人工审计
 - [ ] 10.5 完成 CPU MVP 独立 Agent 前向测试后，才允许更新公开文档和发布 manifest
 - [ ] 10.6 GPU parity 与 8 GB 基准未通过时将 GPU 标记为 planned，不阻塞已验收的 CPU MVP
