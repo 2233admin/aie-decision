@@ -1855,6 +1855,10 @@ def _run_authoritative_and_compare(
 
     Returns the re-computed ledger on success; returns ledger_mismatch or
     non_deterministic status dicts on failure.
+
+    The ledger_hash is computed from the supplied ledger after canonical
+    normalization (recorded_at stripped) so that two CLI replay invocations
+    on the same ledger are byte-for-byte identical.
     """
     authority = _get_authority_module()
     first_result = authority["run"](payload)
@@ -1872,12 +1876,26 @@ def _run_authoritative_and_compare(
             "status": "non_deterministic",
             "iterations": [],
         }
+
+    # Build honest iterations from the replay events on the fresh ledger.
+    # The replay result is deterministic because it depends only on
+    # payload-level fields (hashes, sequences, states) that were already
+    # validated as stable across runs.
+    replay_events = first_result.replay.get("events", ())
+    round_indices = sorted(set(e["round_index"] for e in replay_events if isinstance(e, dict) and "round_index" in e))
+
+    # Compute ledger_hash from the supplied ledger after normalization.
+    # The comparison above proved normalized(first_ledger) == normalized(ledger),
+    # so the supplied ledger's normalized hash is the canonical output hash.
+    canonical = _normalize_ledger_for_comparison(ledger)
+    canonical_hash = _payload_hash(canonical)
+
     return {
         "status": "ok",
         "run_id": first_result.run_id,
-        "iterations": [],
+        "iterations": round_indices,
         "final_status": "result-found" if first_result.decision_value.get("accepted") else "insufficient-information",
-        "ledger_hash": _payload_hash(first_ledger),
+        "ledger_hash": canonical_hash,
     }
 
 

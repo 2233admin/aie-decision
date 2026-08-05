@@ -731,3 +731,55 @@ def test_oracle_replay_still_works_for_oracle_ledgers(tmp_path):
     assert outcome["status"] == "ok", (
         "oracle replay must report ok; got " + repr(outcome.get("status"))
     )
+
+
+
+def test_authority_replay_double_invocation_byte_identical(tmp_path):
+    """Black-box: two CLI replay invocations on the same authority ledger
+    MUST produce byte-for-byte identical JSON output, including identical
+    ledger_hash.  This is the contract that the previous fix broke by
+    hashing the fresh ledger with recorded_at timestamps."""
+    import subprocess, sys
+
+    fixture = GOLDEN
+    out_dir = tmp_path / "auth_out"
+    proc_auth = subprocess.run(
+        [sys.executable, str(RUNNER), "authority", str(fixture),
+         "--output-dir", str(out_dir)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc_auth.returncode == 0
+    ledger_path = out_dir / "wave-ledger.json"
+    assert ledger_path.exists()
+
+    def replay():
+        proc = subprocess.run(
+            [sys.executable, str(RUNNER), "replay", str(ledger_path),
+             "--fixture", str(fixture)],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0
+        return json.loads(proc.stdout.strip().split(chr(10))[-1])
+
+    first = replay()
+    second = replay()
+
+    # Byte-for-byte equality of the full parsed output.
+    assert first == second, (
+        "two replay invocations must produce identical outputs; " +
+        "first: " + json.dumps(first) + " second: " + json.dumps(second)
+    )
+
+    # ledger_hash must be stable across invocations.
+    assert first["ledger_hash"] == second["ledger_hash"], (
+        "ledger_hash must be identical across replay invocations; " +
+        "got " + repr(first["ledger_hash"]) + " vs " + repr(second["ledger_hash"])
+    )
+
+    # iterations must be honest (non-empty when ledger has loop entries).
+    assert isinstance(first["iterations"], list), (
+        "iterations must be a list"
+    )
+    assert len(first["iterations"]) > 0, (
+        "iterations must not be empty when the ledger has loop entries"
+    )
