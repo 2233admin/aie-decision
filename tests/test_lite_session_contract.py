@@ -29,6 +29,7 @@ _BETA5_LEGACY = (
     / "legacy"
 )
 _AGENT_TOOL = _BETA5_LEGACY / "Invoke-SentruxAgentTool.ps1"
+_SENTRUX = shutil.which("sentrux")
 
 
 def _sha256(path: Path) -> str:
@@ -54,7 +55,7 @@ def _build_temp_repo(tmp: Path) -> tuple[Path, str]:
     sentrux_dir = repo / ".sentrux"
     sentrux_dir.mkdir()
 
-    # Copy the native v4 baseline from the real checkout into the temp repo.
+    # Copy the canonical native baseline from the real checkout into the temp repo.
     shutil.copy2(str(REAL_BASELINE), str(sentrux_dir / "baseline.json"))
 
     # Create a minimal rules.toml (required by the tool).
@@ -119,15 +120,19 @@ def test_prerequisites():
     assert REAL_BASELINE.is_file(), (
         f"Native baseline not found at {REAL_BASELINE}"
     )
+    assert _SENTRUX, "compiled sentrux entry not found on PATH"
 
 
-def test_native_baseline_schema_is_v4():
-    """The real native baseline MUST have schema v4 (read-only check).
-    Upgrade to v5 is blocked until a clean-tree anchor with non-degraded
-    metrics can be established."""
+def test_native_baseline_v5_matches_clean_source_commit(tmp_path):
+    """The v5 baseline MUST be reproducible from its clean sourceCommit.
+
+    This preserves the original fail-closed invariant: changing only the
+    schema assertion is insufficient.  Every gated metric and god-file
+    identity must match a fresh scan of the exact committed tree.
+    """
     baseline_data = json.loads(REAL_BASELINE.read_text())
-    assert baseline_data.get("schema") == "code-intel-sentrux-baseline.v4", (
-        f"Native baseline schema mismatch: expected v4, "
+    assert baseline_data.get("schema") == "code-intel-sentrux-baseline.v5", (
+        f"Native baseline schema mismatch: expected v5, "
         f"got {baseline_data.get('schema')}"
     )
     engine = baseline_data.get("engine", {})
@@ -135,6 +140,42 @@ def test_native_baseline_schema_is_v4():
         f"Native baseline engine mismatch: expected sentrux-native, "
         f"got {engine.get('id')}"
     )
+    assert isinstance(baseline_data.get("godFiles"), list)
+    source_commit = baseline_data.get("sourceCommit")
+    assert isinstance(source_commit, str) and source_commit
+
+    clean_tree = tmp_path / "baseline-source"
+    add = subprocess.run(
+        ["git", "worktree", "add", "--detach", str(clean_tree), source_commit],
+        cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert add.returncode == 0, add.stderr
+    try:
+        scan = subprocess.run(
+            [str(_SENTRUX), "scan", str(clean_tree)], capture_output=True,
+            text=True, timeout=60, env=_ambient_env(),
+        )
+        assert scan.returncode == 0, scan.stderr
+        observed = json.loads(scan.stdout)
+        for key in (
+            "quality_signal", "coupling_score", "cycle_count",
+            "god_file_count", "files", "functions", "total_import_edges",
+        ):
+            assert observed[key] == baseline_data["metrics"][key], (
+                f"baseline metric {key} does not match clean sourceCommit: "
+                f"{baseline_data['metrics'][key]} != {observed[key]}"
+            )
+        observed_gods = sorted(
+            item["path"].replace("\\", "/")
+            for item in observed["files_detail"] if item["is_god_file"]
+        )
+        baseline_gods = sorted(item["path"] for item in baseline_data["godFiles"])
+        assert observed_gods == baseline_gods
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(clean_tree)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -142,8 +183,8 @@ def test_native_baseline_schema_is_v4():
 # ---------------------------------------------------------------------------
 
 
-def test_session_start_overwrites_baseline_in_temp_repo(tmp_path):
-    """session_start overwrites the baseline in a temp repo — 1.6 is BLOCKED.
+def test_session_start_preserves_native_baseline_in_temp_repo(tmp_path):
+    """session_start writes cache evidence without altering the native baseline.
 
     OpenSpec 1.6 mandatory conformance case:
       A lite session MUST write only to ``.sentrux/cache/lite-baseline.json``
@@ -154,9 +195,8 @@ def test_session_start_overwrites_baseline_in_temp_repo(tmp_path):
     ``.sentrux/baseline.json`` is never read or written by this test
     beyond the prerequisite check.
 
-    Current status (2026-08-05): **BLOCKED** — canonical beta.5
-    ``Invoke-SentruxAgentTool.ps1`` calls ``sentrux gate --save`` which
-    hard-codes ``.sentrux/baseline.json`` as the output path.
+    The compiled orchestration entry owns the cache-only path; this assertion
+    remains byte-for-byte so a future fallback to the native baseline fails.
     """
     repo, hash_before = _build_temp_repo(tmp_path)
     baseline = repo / ".sentrux" / "baseline.json"
@@ -170,11 +210,8 @@ def test_session_start_overwrites_baseline_in_temp_repo(tmp_path):
         bytes_after = baseline.read_bytes()
 
         # === Mandatory conformance assertion ===
-        # FAILS because canonical tool overwrites .sentrux/baseline.json.
         assert hash_after == hash_before, (
-            f"BLOCKED: session_start ALTERED the baseline in temp repo!\n"
-            f"  Upstream gap: Invoke-SentruxAgentTool.ps1 calls sentrux gate\n"
-            f"  --save which hard-codes .sentrux/baseline.json.\n"
+            f"session_start ALTERED the baseline in temp repo!\n"
             f"  SHA-256 before: {hash_before}\n"
             f"  SHA-256 after:  {hash_after}\n"
             f"  Byte length before: {len(bytes_before)}\n"
@@ -185,11 +222,8 @@ def test_session_start_overwrites_baseline_in_temp_repo(tmp_path):
         _cleanup_temp_artifacts(repo, session_id)
 
 
-def test_session_end_overwrites_baseline_in_temp_repo(tmp_path):
-    """session_end also overwrites the baseline in a temp repo.
-
-    Confirms the hard-coded path applies to both session boundaries.
-    """
+def test_session_end_preserves_native_baseline_in_temp_repo(tmp_path):
+    """session_end preserves the native baseline after session_start."""
     repo, hash_before = _build_temp_repo(tmp_path)
     baseline = repo / ".sentrux" / "baseline.json"
     session_id = "test-lite-tmp-end"
@@ -204,7 +238,7 @@ def test_session_end_overwrites_baseline_in_temp_repo(tmp_path):
         bytes_after_end = baseline.read_bytes()
 
         assert hash_after_end == hash_after_start, (
-            f"BLOCKED: session_end ALTERED the baseline after start!\n"
+            f"session_end ALTERED the baseline after start!\n"
             f"  SHA-256 after start: {hash_after_start}\n"
             f"  SHA-256 after end:   {hash_after_end}\n"
             f"  Byte length after start: {len(bytes_after_start)}\n"
