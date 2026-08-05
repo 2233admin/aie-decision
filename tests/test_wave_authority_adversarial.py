@@ -200,7 +200,8 @@ def test_liter_unit_is_recognised():
 def test_compound_unit_formula_validates_dimensions():
     """``fuel_unit_cost * liters_per_leg`` (usd/liter * liter) MUST fail
     the FactorIR dimensionless gate (output: money/USD) but MUST compile
-    through the proxy retry in compile_joint_schema."""
+    as a DeterministicTransform through the axis-transform path in
+    compile_joint_schema."""
     from aie_decision.factor_ir import FactorIRError, compile_factor_ir
     from aie_decision.joint_schema import dimension_of_unit
 
@@ -442,3 +443,71 @@ def test_authority_never_exit_zero_without_components(tmp_path):
     assert proc.returncode != 0, (
         f"must not exit 0 when components are not all called; got {proc.returncode}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 8. Golden surface mapping_ids — legal only, illegal as structured failures
+# ---------------------------------------------------------------------------
+
+
+def test_golden_surface_mapping_ids_exactly_three_legal():
+    """The exact golden authoritative run MUST produce surface.mapping_ids
+    containing only the three legal mappings (time-leg, price-fuel,
+    magnitude-fuel).  The two illegal mappings (illegitimate-time-constant,
+    illegitimate-time-money) MUST be absent from mapping_ids and present
+    as structured failure evidence in staged_failures."""
+    from aie_decision.wave_authority import run_authoritative_wave
+
+    result = run_authoritative_wave(_golden_payload())
+
+    mapping_ids = set(result.surface.get("mapping_ids", []))
+    legal = {"time-leg", "price-fuel", "magnitude-fuel"}
+    illegal = {"illegitimate-time-constant", "illegitimate-time-money"}
+
+    assert mapping_ids == legal, (
+        f"surface.mapping_ids must be exactly the three legal mappings; "
+        f"got {mapping_ids}"
+    )
+    assert not (mapping_ids & illegal), (
+        f"illegal mappings must not appear in surface.mapping_ids: "
+        f"{mapping_ids & illegal}"
+    )
+
+    # Structured failures must contain both illegal mappings with evidence.
+    staged = result.staged_failures
+    assert len(staged) == 2, (
+        f"expected 2 staged failures, got {len(staged)}"
+    )
+    staged_ids = {f["mapping_id"] for f in staged}
+    assert staged_ids == illegal, (
+        f"staged failures must cover both illegal mappings; got {staged_ids}"
+    )
+    for failure in staged:
+        assert failure["code"] == "expected_failure"
+        assert "operand" in failure
+        assert "operand_unit" in failure
+        assert "expected_unit" in failure
+
+
+def test_illegal_mappings_not_in_particle_surface():
+    """Illegal mappings MUST be excluded from particle evaluation entirely —
+    they appear only in staged_failures, never in surface.mapping_ids
+    or the particle_surface component record."""
+    from aie_decision.wave_authority import run_authoritative_wave
+
+    result = run_authoritative_wave(_golden_payload())
+
+    # Check provenance: particle_surface component must be called=True.
+    ps_prov = [c for c in result.provenance.components if c.component == "particle_surface"]
+    assert len(ps_prov) == 1
+    assert ps_prov[0].called is True
+
+    # The surface mapping_ids must not include illegal entries.
+    surface_ids = set(result.surface.get("mapping_ids", []))
+    assert "illegitimate-time-constant" not in surface_ids
+    assert "illegitimate-time-money" not in surface_ids
+
+    # staged_failures must include them with structured evidence.
+    staged_ids = {f["mapping_id"] for f in result.staged_failures}
+    assert "illegitimate-time-constant" in staged_ids
+    assert "illegitimate-time-money" in staged_ids

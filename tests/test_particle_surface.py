@@ -7,6 +7,7 @@ unless an explicit calibration record is supplied.
 
 from __future__ import annotations
 
+import ast
 import json
 
 import numpy as np
@@ -15,6 +16,7 @@ import pytest
 from aie_decision.particle_surface import (
     CalibrationBasis,
     CalibrationRecord,
+    CompiledIR,
     CoverageSemantics,
     MappingKind,
     MappingSpec,
@@ -28,6 +30,13 @@ from aie_decision.particle_surface import (
     normalise_weights,
     surface_as_mapping,
 )
+
+
+def _compile_formula_ast(expression: str) -> ast.Expression:
+    """Parse a formula expression into an AST for CompiledIR."""
+    if not expression or not expression.strip():
+        raise ValueError("expression is required")
+    return ast.parse(expression.strip(), mode="eval")
 
 
 def _two_variable_request(**overrides) -> SurfaceRequest:
@@ -51,6 +60,18 @@ def _two_variable_request(**overrides) -> SurfaceRequest:
         ),
     }
     payload.update(overrides)
+    # Auto-generate compiled IR trees for FORMULA mappings unless overridden.
+    if "compiled_ir_trees" not in payload:
+        compiled: dict[str, CompiledIR] = {}
+        for mapping in payload["mappings"]:
+            if mapping.kind is MappingKind.FORMULA:
+                tree = _compile_formula_ast(mapping.expression or "0")
+                compiled[mapping.mapping_id] = CompiledIR(
+                    mapping_id=mapping.mapping_id,
+                    tree=tree,
+                    is_factor=False,  # default: axis transform (test formulas compute axis values)
+                )
+        payload["compiled_ir_trees"] = compiled
     return SurfaceRequest(**payload)
 
 
@@ -174,20 +195,65 @@ def test_likelihood_mapping_emits_bimodal_safe_zones():
     assert surface.mapping_breakdown["low"].shape == (request.particle_count,)
 
 
-def test_invalid_formula_is_rejected_without_running_sampler():
-    request = _two_variable_request(
-        mappings=(
-            MappingSpec(
-                mapping_id="bad",
-                kind=MappingKind.FORMULA,
-                variables=("visitors",),
-                result_axis="revenue",
-                expression="__import__('os')",
-            ),
-        ),
+def test_formula_mapping_without_compiled_ir_fails_before_sampling():
+    """A FORMULA mapping without a compiled IR entry MUST fail before any particle
+    is evaluated — there is no raw formula parser fallback."""
+    request = _two_variable_request()
+    # Constructing a SurfaceRequest with an empty compiled_ir_trees when
+    # FORMULA mappings exist MUST fail in __post_init__ — fail-early.
+    with pytest.raises(ValueError, match="missing entries"):
+        SurfaceRequest(
+            question_id=request.question_id,
+            seed=request.seed,
+            particle_count=request.particle_count,
+            axes=request.axes,
+            variables=request.variables,
+            mappings=request.mappings,
+            compiled_ir_trees={},  # empty — missing "rev"
+        )
+
+
+def test_extra_compiled_ir_entry_fails():
+    """An extra compiled IR entry for a non-existent mapping_id MUST fail."""
+    request = _two_variable_request()
+    extra = dict(request.compiled_ir_trees)
+    extra["nonexistent"] = CompiledIR(
+        mapping_id="nonexistent",
+        tree=_compile_formula_ast("1 + 1"),
+        is_factor=True,
     )
-    with pytest.raises(ValueError, match="supports only"):
-        compile_particle_surface(request)
+    with pytest.raises(ValueError, match="unknown mapping_ids"):
+        SurfaceRequest(
+            question_id=request.question_id,
+            seed=request.seed,
+            particle_count=request.particle_count,
+            axes=request.axes,
+            variables=request.variables,
+            mappings=request.mappings,
+            compiled_ir_trees=extra,
+        )
+
+
+def test_wrong_mapping_id_in_compiled_ir_fails():
+    """A compiled IR entry with a mismatched mapping_id MUST fail."""
+    request = _two_variable_request()
+    broken_compiled = {
+        "rev": CompiledIR(
+            mapping_id="wrong-id",  # mismatch
+            tree=request.compiled_ir_trees["rev"].tree,
+            is_factor=True,
+        ),
+    }
+    with pytest.raises(ValueError, match="mapping_id mismatch"):
+        SurfaceRequest(
+            question_id=request.question_id,
+            seed=request.seed,
+            particle_count=request.particle_count,
+            axes=request.axes,
+            variables=request.variables,
+            mappings=request.mappings,
+            compiled_ir_trees=broken_compiled,
+        )
 
 
 def test_likelihood_mapping_requires_observation_and_scale():
@@ -338,3 +404,205 @@ def test_compile_rejects_empty_axes_and_variables():
             variables=(),
             mappings=(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Adversarial tests: typed compiled IR contract
+# ---------------------------------------------------------------------------
+
+
+def test_two_deterministic_transforms_different_formulas_different_particles():
+    """Two DeterministicTransforms with the same seed and inputs but different
+    compiled formulas MUST produce different axis particles and diagnostics."""
+    seed = 42
+    tree_a = _compile_formula_ast("visitors * 2")
+    tree_b = _compile_formula_ast("visitors / 3")
+
+    base = {
+        "question_id": "q-det-xform",
+        "seed": seed,
+        "particle_count": 128,
+        "axes": (OutcomeAxis("x", "CNY"),),
+        "variables": (
+            VariableSpec("visitors", "count/day", 800.0, 1200.0),
+        ),
+        "mappings": (
+            MappingSpec(
+                mapping_id="xform",
+                kind=MappingKind.FORMULA,
+                variables=("visitors",),
+                result_axis="x",
+                expression="visitors * 2",  # irrelevant — compiled IR wins
+            ),
+        ),
+    }
+
+    compiled_a = {"xform": CompiledIR("xform", tree_a, is_factor=False)}
+    compiled_b = {"xform": CompiledIR("xform", tree_b, is_factor=False)}
+
+    surface_a = compile_particle_surface(SurfaceRequest(compiled_ir_trees=compiled_a, **base))
+    surface_b = compile_particle_surface(SurfaceRequest(compiled_ir_trees=compiled_b, **base))
+
+    # Same seed → same variable samples → different formulas → different axis values.
+    assert not np.array_equal(surface_a.particles, surface_b.particles), (
+        "deterministic transforms with different formulas must produce different particles"
+    )
+    # Both surfaces are deterministic — replay identity.
+    surface_a2 = compile_particle_surface(SurfaceRequest(compiled_ir_trees=compiled_a, **base))
+    assert np.array_equal(surface_a.particles, surface_a2.particles)
+
+
+def test_two_factor_irs_different_weights_same_axis_values():
+    """Two FactorIRs with different formulas produce different non-uniform
+    weights while the DeterministicTransform axis values stay the same."""
+    seed = 99
+    tree_axis = _compile_formula_ast("visitors")
+    tree_w1 = _compile_formula_ast("conversion_rate")
+    tree_w2 = _compile_formula_ast("conversion_rate * 0.5")
+
+    base = {
+        "question_id": "q-factor-split",
+        "seed": seed,
+        "particle_count": 256,
+        "axes": (OutcomeAxis("x", "CNY"),),
+        "variables": (
+            VariableSpec("visitors", "count/day", 800.0, 1200.0),
+            VariableSpec("conversion_rate", "ratio", 0.08, 0.12),
+        ),
+        "mappings": (
+            MappingSpec(
+                mapping_id="axis-xform",
+                kind=MappingKind.FORMULA,
+                variables=("visitors",),
+                result_axis="x",
+                expression="visitors",
+            ),
+            MappingSpec(
+                mapping_id="weight-factor",
+                kind=MappingKind.FORMULA,
+                variables=("conversion_rate",),
+                result_axis="x",
+                expression="conversion_rate",
+            ),
+        ),
+    }
+
+    compiled_a = {
+        "axis-xform": CompiledIR("axis-xform", tree_axis, is_factor=False),
+        "weight-factor": CompiledIR("weight-factor", tree_w1, is_factor=True),
+    }
+    compiled_b = {
+        "axis-xform": CompiledIR("axis-xform", tree_axis, is_factor=False),
+        "weight-factor": CompiledIR("weight-factor", tree_w2, is_factor=True),
+    }
+
+    surface_a = compile_particle_surface(SurfaceRequest(compiled_ir_trees=compiled_a, **base))
+    surface_b = compile_particle_surface(SurfaceRequest(compiled_ir_trees=compiled_b, **base))
+
+    # Same axis transform → same axis particles.
+    assert np.array_equal(surface_a.particles, surface_b.particles), (
+        "axis transform values must be identical when only FactorIR changes"
+    )
+    # Different FactorIRs → different non-uniform weights.
+    assert not np.array_equal(surface_a.log_weights, surface_b.log_weights), (
+        "factor IRs with different formulas must produce different weights"
+    )
+    # Weights must be non-uniform (FactorIR contributes actual values).
+    assert np.std(surface_a.log_weights) > 0, "FactorIR must produce non-uniform weights"
+    assert np.std(surface_b.log_weights) > 0, "FactorIR must produce non-uniform weights"
+
+
+def test_tampered_expression_ignored_when_compiled_ir_fixed():
+    """Tampering the raw expression while the compiled IR is fixed MUST NOT
+    select a raw fallback — the compiled IR is the single authority."""
+    seed = 7
+    tree = _compile_formula_ast("visitors * 2")
+
+    compiled = {"xform": CompiledIR("xform", tree, is_factor=False)}
+
+    # Request with the real expression.
+    request_clean = SurfaceRequest(
+        question_id="q-tamper",
+        seed=seed,
+        particle_count=64,
+        axes=(OutcomeAxis("x", "CNY"),),
+        variables=(VariableSpec("visitors", "count/day", 800.0, 1200.0),),
+        mappings=(
+            MappingSpec(
+                mapping_id="xform",
+                kind=MappingKind.FORMULA,
+                variables=("visitors",),
+                result_axis="x",
+                expression="visitors * 2",
+            ),
+        ),
+        compiled_ir_trees=compiled,
+    )
+
+    # Request with a tampered expression — compiled IR unchanged.
+    request_tampered = SurfaceRequest(
+        question_id="q-tamper",
+        seed=seed,
+        particle_count=64,
+        axes=(OutcomeAxis("x", "CNY"),),
+        variables=(VariableSpec("visitors", "count/day", 800.0, 1200.0),),
+        mappings=(
+            MappingSpec(
+                mapping_id="xform",
+                kind=MappingKind.FORMULA,
+                variables=("visitors",),
+                result_axis="x",
+                expression="__import__('os').system('rm -rf /')",
+            ),
+        ),
+        compiled_ir_trees=compiled,
+    )
+
+    surface_clean = compile_particle_surface(request_clean)
+    surface_tampered = compile_particle_surface(request_tampered)
+
+    # Same compiled IR → identical particles and weights.
+    assert np.array_equal(surface_clean.particles, surface_tampered.particles), (
+        "tampered expression must not affect evaluation — compiled IR is authority"
+    )
+    assert np.array_equal(surface_clean.log_weights, surface_tampered.log_weights)
+    # Surface identity derives from compiled IR, not raw expression.
+    assert surface_clean.surface_id == surface_tampered.surface_id, (
+        "surface ID must be stable when compiled IR is unchanged"
+    )
+
+
+def test_zero_valued_transform_is_safe():
+    """A DeterministicTransform that evaluates to zero for all particles is safe —
+    no F/F division or NaN propagation occurs."""
+    tree_zero = _compile_formula_ast("v * 0")
+
+    compiled = {"zero-xform": CompiledIR("zero-xform", tree_zero, is_factor=False)}
+
+    request = SurfaceRequest(
+        question_id="q-zero",
+        seed=1,
+        particle_count=64,
+        axes=(OutcomeAxis("x", "CNY"),),
+        variables=(VariableSpec("v", "count/day", 0.0, 100.0),),
+        mappings=(
+            MappingSpec(
+                mapping_id="zero-xform",
+                kind=MappingKind.FORMULA,
+                variables=("v",),
+                result_axis="x",
+                expression="v * 0",
+            ),
+        ),
+        compiled_ir_trees=compiled,
+    )
+
+    surface = compile_particle_surface(request)
+    # All axis values must be exactly zero.
+    assert np.all(surface.particles == 0.0), "zero transform must produce zero particles"
+    # Log weights and particles must be finite.
+    assert np.all(np.isfinite(surface.log_weights))
+    assert np.all(np.isfinite(surface.particles))
+    # Normalised weights must sum to 1.0 (uniform since all weights are 0).
+    weights = normalise_weights(surface)
+    assert weights.sum() == pytest.approx(1.0, abs=1e-9)

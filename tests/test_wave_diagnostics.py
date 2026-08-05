@@ -8,6 +8,7 @@ never advertise uncalibrated probability semantics.
 
 from __future__ import annotations
 
+import ast
 import json
 
 import numpy as np
@@ -16,6 +17,7 @@ import pytest
 from aie_decision.particle_surface import (
     CalibrationBasis,
     CalibrationRecord,
+    CompiledIR,
     CoverageSemantics,
     MappingKind,
     MappingSpec,
@@ -57,6 +59,18 @@ def _uniform_request(**overrides) -> SurfaceRequest:
         ),
     }
     payload.update(overrides)
+    # Auto-generate compiled IR for FORMULA mappings unless overridden.
+    if "compiled_ir_trees" not in payload:
+        compiled: dict[str, CompiledIR] = {}
+        for mapping in payload["mappings"]:
+            if mapping.kind is MappingKind.FORMULA:
+                tree = ast.parse((mapping.expression or "0").strip(), mode="eval")
+                compiled[mapping.mapping_id] = CompiledIR(
+                    mapping_id=mapping.mapping_id,
+                    tree=tree,
+                    is_factor=False,
+                )
+        payload["compiled_ir_trees"] = compiled
     return SurfaceRequest(**payload)
 
 
@@ -326,6 +340,18 @@ def test_peak_summary_rejects_unknown_axis():
 
 
 def test_summarise_surface_supports_optional_target_width_and_references():
+    compiled = {
+        "rev": CompiledIR(
+            mapping_id="rev",
+            tree=ast.parse("visitors * conv", mode="eval"),
+            is_factor=False,
+        ),
+        "lat": CompiledIR(
+            mapping_id="lat",
+            tree=ast.parse("visitors", mode="eval"),
+            is_factor=False,
+        ),
+    }
     request = SurfaceRequest(
         question_id="multiaxis",
         seed=1,
@@ -354,6 +380,7 @@ def test_summarise_surface_supports_optional_target_width_and_references():
                 expression="visitors",
             ),
         ),
+        compiled_ir_trees=compiled,
     )
     surface = compile_particle_surface(request)
     diagnostics = summarise_surface(

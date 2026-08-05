@@ -18,7 +18,6 @@ is a **non-authoritative oracle** used only for cross-path parity checks.
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import time
@@ -49,6 +48,7 @@ from .joint_schema import (
 from .particle_surface import (
     CalibrationBasis,
     CalibrationRecord,
+    CompiledIR,
     CoverageSemantics,
     ParticleSurface,
     SurfaceKind,
@@ -203,6 +203,7 @@ class AuthoritativeWaveResult:
     checkpoint: dict[str, Any]
     replay: dict[str, Any]
     provenance: InvocationProvenance
+    staged_failures: tuple[dict[str, Any], ...] = ()
     schema_version: str = AUTHORITY_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -217,6 +218,7 @@ class AuthoritativeWaveResult:
             "checkpoint": self.checkpoint,
             "replay": self.replay,
             "provenance": self.provenance.to_dict(),
+            "staged_failures": list(self.staged_failures),
         }
 
 
@@ -492,13 +494,12 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
     _record("joint_schema", JOINT_SCHEMA_VERSION, schema_ok, {"run_id": run_id}, {"ok": schema_ok}, schema_error)
 
     # -- 2. FactorIR / axis-transform compilation ---------------------------
-    # Use the schema-compiled result (which now correctly splits
-    # dimensionless FactorIR from dimensional axis-transforms).  No
-    # (F)/(F) proxy — every formula is either a dimensionless factor or
-    # a dimensional axis-transform validated against its target axis.
+    # Compile every legal mapping into a typed CompiledIR that discriminates
+    # FactorIR (is_factor=True, dimensionless → weight) from
+    # DeterministicTransform (is_factor=False, dimensional → axis value).
     factor_ok = True
     factor_error = None
-    compiled_ir_trees: dict[str, ast.Expression] = {}
+    compiled_ir_trees: dict[str, CompiledIR] = {}
     try:
         full_dim_map = {str(var["name"]): dimension_of_unit(str(var["unit"])) for var in raw_variables}
         # Build axis-index for dimension resolution.
@@ -524,7 +525,11 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
                     formula=formula,
                     variable_dimensions=per_mapping_dims,
                 )
-                compiled_ir_trees[mapping_id] = ir.tree
+                compiled_ir_trees[mapping_id] = CompiledIR(
+                    mapping_id=mapping_id,
+                    tree=ir.tree,
+                    is_factor=True,
+                )
             except Exception:
                 # Dimensional formula — validate as axis-transform against
                 # the target axis dimension.
@@ -544,7 +549,11 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
                         variable_dimensions=per_mapping_dims,
                         target_axis_dimension=target_dim,
                     )
-                    compiled_ir_trees[mapping_id] = xform.tree
+                    compiled_ir_trees[mapping_id] = CompiledIR(
+                        mapping_id=mapping_id,
+                        tree=xform.tree,
+                        is_factor=False,
+                    )
                 except Exception as exc:
                     factor_ok = False
                     factor_error = str(exc)
@@ -555,6 +564,10 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
     _record("factor_ir", FACTOR_IR_VERSION, factor_ok, {"mapping_count": len(compiled_ir_trees)}, {"count": len(compiled_ir_trees)}, factor_error)
 
     # -- 3. Particle surface -------------------------------------------------
+    # Build particle-surface domain objects from *legal* mappings only.
+    # Expected-failure mappings (illegitimate-time-constant,
+    # illegitimate-time-money) are validated for structured failure evidence
+    # but never touch particles and never appear in surface.mapping_ids.
     ps_axes = tuple(
         __to_ps_axis(axis) for axis in outcome_axes_raw
     )
@@ -562,30 +575,34 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
         __to_ps_variable(var) for var in raw_variables
     )
     ps_mappings = tuple(
-        __to_ps_mapping(m, ps_axes) for m in raw_mappings
+        __to_ps_mapping(m, ps_axes) for m in _legal_mappings
     )
     budget = payload.get("budget", {})
     particle_count = int(budget.get("particle_count", 128))
     seed = int(budget.get("seed", 0))
 
-    request = SurfaceRequest(
-        question_id=run_id,
-        seed=seed,
-        particle_count=particle_count,
-        axes=ps_axes,
-        variables=ps_variables,
-        mappings=ps_mappings,
-        coverage_semantics=CoverageSemantics.UNCALIBRATED_RANGE,
-        compiled_ir_trees=compiled_ir_trees if compiled_ir_trees else None,
-    )
     surface_ok = True
     surface_error = None
-    try:
-        ps_surface = compile_particle_surface(request)
-    except Exception as exc:
-        ps_surface = None
+    ps_surface = None
+    if factor_ok:
+        try:
+            request = SurfaceRequest(
+                question_id=run_id,
+                seed=seed,
+                particle_count=particle_count,
+                axes=ps_axes,
+                variables=ps_variables,
+                mappings=ps_mappings,
+                coverage_semantics=CoverageSemantics.UNCALIBRATED_RANGE,
+                compiled_ir_trees=compiled_ir_trees,
+            )
+            ps_surface = compile_particle_surface(request)
+        except Exception as exc:
+            surface_ok = False
+            surface_error = str(exc)
+    else:
         surface_ok = False
-        surface_error = str(exc)
+        surface_error = f"factor_ir compilation failed: {factor_error}"
     _record("particle_surface", "particle_surface/1", surface_ok, {"particle_count": particle_count, "seed": seed}, {"surface_id": ps_surface.surface_id if ps_surface else None}, surface_error)
 
     # -- 4. Diagnostics ------------------------------------------------------
@@ -677,6 +694,7 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
         checkpoint=loop_result.get("checkpoint", {}) if loop_result else {},
         replay=replay,
         provenance=provenance,
+        staged_failures=tuple(_staged_failures),
     )
 
 

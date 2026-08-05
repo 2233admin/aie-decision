@@ -32,6 +32,24 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# Compiled IR discriminator
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledIR:
+    """Minimal typed container: the compiled AST plus its IR kind discriminator.
+
+    ``is_factor=True``  → FactorIR — dimensionless log-potential weight only.
+    ``is_factor=False`` → DeterministicTransform — axis-value computation only.
+    """
+
+    mapping_id: str
+    tree: ast.Expression
+    is_factor: bool
+
+
 class SurfaceKind(StrEnum):
     POSSIBILITY = "possibility_surface"
     PROBABILITY = "probability_surface"
@@ -198,11 +216,12 @@ class CalibrationRecord:
 class SurfaceRequest:
     """Declarative description of the wave surface to compile.
 
-    When *compiled_ir_trees* is provided, the surface evaluator uses the
-    pre-validated AST trees from compiled FactorIR/DeterministicTransform
-    objects instead of re-parsing formula strings.  This eliminates the
-    duplicate parser path and makes the compiled IR the single evaluation
-    authority.
+    *compiled_ir_trees* is required: every FORMULA mapping must have exactly
+    one compiled entry with a matching *mapping_id*.  The compiled IR is the
+    single evaluation authority — there is no raw-formula parser fallback.
+    Each entry discriminates FactorIR (*is_factor=True*) from
+    DeterministicTransform (*is_factor=False*), which determines whether the
+    mapping contributes to log-weights or axis values.
     """
 
     question_id: str
@@ -211,10 +230,10 @@ class SurfaceRequest:
     axes: tuple[OutcomeAxis, ...]
     variables: tuple[VariableSpec, ...]
     mappings: tuple[MappingSpec, ...]
+    compiled_ir_trees: Mapping[str, CompiledIR] = field(default_factory=dict)
     coverage_semantics: CoverageSemantics = CoverageSemantics.UNCALIBRATED_RANGE
     calibration: CalibrationRecord | None = None
     schema_version: str = "particle_surface/1"
-    compiled_ir_trees: Mapping[str, ast.Expression] | None = None
 
     def __post_init__(self) -> None:
         if not self.question_id.strip():
@@ -238,6 +257,7 @@ class SurfaceRequest:
             raise ValueError("MappingSpec.mapping_id values must be unique")
         axis_set = set(axis_names)
         variable_set = set(variable_names)
+        formula_ids = set()
         for mapping in self.mappings:
             if mapping.result_axis not in axis_set:
                 raise ValueError(
@@ -248,6 +268,34 @@ class SurfaceRequest:
                 raise ValueError(
                     f"MappingSpec {mapping.mapping_id} references unknown variables: "
                     + ", ".join(missing)
+                )
+            if mapping.kind is MappingKind.FORMULA:
+                formula_ids.add(mapping.mapping_id)
+        # Validate compiled_ir_trees: every FORMULA mapping must have exactly
+        # one compiled entry with matching mapping_id and a valid tree.
+        compiled_ids = set(self.compiled_ir_trees.keys())
+        missing_compiled = formula_ids - compiled_ids
+        if missing_compiled:
+            raise ValueError(
+                "SurfaceRequest.compiled_ir_trees missing entries for FORMULA mappings: "
+                + ", ".join(sorted(missing_compiled))
+            )
+        extra_compiled = compiled_ids - {m.mapping_id for m in self.mappings}
+        if extra_compiled:
+            raise ValueError(
+                "SurfaceRequest.compiled_ir_trees has entries for unknown mapping_ids: "
+                + ", ".join(sorted(extra_compiled))
+            )
+        for mid in formula_ids:
+            compiled = self.compiled_ir_trees[mid]
+            if compiled.mapping_id != mid:
+                raise ValueError(
+                    f"compiled_ir_trees[{mid!r}].mapping_id mismatch: "
+                    f"{compiled.mapping_id!r}"
+                )
+            if not isinstance(compiled.tree, ast.Expression):
+                raise ValueError(
+                    f"compiled_ir_trees[{mid!r}].tree must be ast.Expression"
                 )
 
 
@@ -302,70 +350,24 @@ class ParticleSurface:
                 )
 
 
-_ALLOWED_FORMULA_NODES: tuple[type[ast.AST], ...] = (
-    ast.Expression,
-    ast.BinOp,
-    ast.UnaryOp,
-    ast.Name,
-    ast.Load,
-    ast.Constant,
-    ast.Add,
-    ast.Sub,
-    ast.Mult,
-    ast.Div,
-    ast.UAdd,
-    ast.USub,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class _ParsedFormula:
-    tree: ast.Expression
-    variable_names: tuple[str, ...]
-
-
-def _parse_formula(expression: str, allowed_variables: set[str]) -> _ParsedFormula:
-    if not isinstance(expression, str) or not expression.strip():
-        raise ValueError("mapping expression is required")
-    try:
-        tree = ast.parse(expression.strip(), mode="eval")
-    except SyntaxError as exc:
-        raise ValueError("mapping expression must be valid arithmetic") from exc
-    for node in ast.walk(tree):
-        if not isinstance(node, _ALLOWED_FORMULA_NODES):
-            raise ValueError(
-                "mapping expression supports only names, numbers, +, -, *, / and parentheses"
-            )
-        if isinstance(node, ast.Constant) and (
-            isinstance(node.value, bool) or not isinstance(node.value, (int, float))
-        ):
-            raise ValueError("mapping expression constants must be numeric")
-    names: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            if node.id not in allowed_variables:
-                raise ValueError(f"mapping references unknown variable: {node.id}")
-            if node.id not in names:
-                names.append(node.id)
-    if not names:
-        raise ValueError("mapping expression must reference at least one variable")
-    return _ParsedFormula(tree, tuple(names))
-
-
 def _evaluate_formula_vector(
-    parsed: _ParsedFormula,
+    tree: ast.Expression,
     samples: np.ndarray,
     name_to_index: Mapping[str, int],
 ) -> np.ndarray:
-    """Vectorised evaluation across every particle in the cloud."""
+    """Vectorised evaluation across every particle in the cloud.
 
-    name_to_index = dict(name_to_index)
+    The *tree* must be a pre-validated compiled IR AST — this function does
+    NOT parse any raw expression and has no fallback parser path.
+    """
+
+    _name_to_index = dict(name_to_index)
 
     def _walk(node: ast.AST) -> np.ndarray:
         if isinstance(node, ast.Expression):
             return _walk(node.body)
         if isinstance(node, ast.Name):
-            return samples[:, name_to_index[node.id]]
+            return samples[:, _name_to_index[node.id]]
         if isinstance(node, ast.Constant):
             return np.full(samples.shape[0], float(node.value))
         if isinstance(node, ast.UnaryOp):
@@ -389,7 +391,7 @@ def _evaluate_formula_vector(
                 return left / right
         raise ValueError("unsupported mapping node")
 
-    return _walk(parsed.tree)
+    return _walk(tree)
 
 
 def _stable_surface_id(request: SurfaceRequest) -> str:
@@ -411,9 +413,25 @@ def _stable_surface_id(request: SurfaceRequest) -> str:
                 "kind": mapping.kind.value,
                 "variables": list(mapping.variables),
                 "result_axis": mapping.result_axis,
-                "expression": mapping.expression,
                 "observation": mapping.observation,
                 "observation_scale": mapping.observation_scale,
+                # Surface identity derives from the compiled IR (single
+                # authority), not the raw expression string.  A tampered
+                # expression with unchanged compiled IR produces the same
+                # identity because the compiled AST is what executes.
+                "compiled_ir_is_factor": (
+                    request.compiled_ir_trees[mapping.mapping_id].is_factor
+                    if mapping.kind is MappingKind.FORMULA and mapping.mapping_id in request.compiled_ir_trees
+                    else None
+                ),
+                "compiled_ir_ast_hash": (
+                    hashlib.sha256(
+                        ast.dump(request.compiled_ir_trees[mapping.mapping_id].tree, annotate_fields=False)
+                        .encode("utf-8")
+                    ).hexdigest()[:16]
+                    if mapping.kind is MappingKind.FORMULA and mapping.mapping_id in request.compiled_ir_trees
+                    else None
+                ),
             }
             for mapping in request.mappings
         ],
@@ -446,9 +464,13 @@ def compile_particle_surface(request: SurfaceRequest) -> ParticleSurface:
     The compile step:
 
     * samples uniformly inside each variable's bounded support,
-    * evaluates every declared mapping on each particle,
-    * writes the unnormalised log potential as the sum of per-mapping log
-      contributions,
+    * evaluates every declared mapping on each particle using its pre-compiled
+      IR tree (no raw formula parsing — the compiled IR is the single authority),
+    * splits behaviour by compiled IR kind:
+      - **DeterministicTransform** (*is_factor=False*): writes the evaluated
+        result to the target axis column; zero weight contribution.
+      - **FactorIR** (*is_factor=True*): adds the evaluated result to the
+        log-potential weight; does **not** overwrite axis values.
     * enforces the possibility/probability semantic gate.
 
     The result is reproducible for the same ``seed`` and ``particle_count``
@@ -479,30 +501,33 @@ def compile_particle_surface(request: SurfaceRequest) -> ParticleSurface:
     mapping_breakdown: dict[str, np.ndarray] = {}
     log_potential = np.zeros(request.particle_count, dtype=float)
     particles = np.zeros((request.particle_count, len(axis_names)), dtype=float)
-    # Build the set of valid variable names once.
-    allowed_vars = set(variable_names)
 
     for mapping in request.mappings:
         axis_index = axis_names.index(mapping.result_axis)
         if mapping.kind is MappingKind.FORMULA:
-            # Prefer the pre-compiled IR tree (single authority).  Fall back
-            # to raw formula parsing only when no compiled IR is provided.
-            ir_tree = (
-                request.compiled_ir_trees.get(mapping.mapping_id)
-                if request.compiled_ir_trees is not None
-                else None
+            # Mandatory: every FORMULA mapping must have a compiled IR entry.
+            # Missing, wrong-id, or wrong-type entries are rejected here before
+            # any particle is evaluated — no raw formula fallback exists.
+            compiled = request.compiled_ir_trees.get(mapping.mapping_id)
+            if compiled is None:
+                raise ValueError(
+                    f"FORMULA mapping {mapping.mapping_id!r} has no compiled IR entry"
+                )
+            contribution = _evaluate_formula_vector(
+                compiled.tree, samples, name_to_index
             )
-            if ir_tree is not None:
-                # Use the validated IR tree — no re-parsing.
-                parsed = _ParsedFormula(ir_tree, tuple(mapping.variables))
+            if compiled.is_factor:
+                # FactorIR — dimensionless log-potential weight only.
+                # Add the contribution to log_weights; do NOT overwrite axis
+                # values (the axis column retains its prior value, which may
+                # be zero or computed by a DeterministicTransform).
+                mapping_contribution = contribution
+                log_potential = log_potential + mapping_contribution
             else:
-                parsed = _parse_formula(mapping.expression or "", allowed_vars)
-            contribution = _evaluate_formula_vector(parsed, samples, name_to_index)
-            particles[:, axis_index] = contribution
-            # Formula mappings do not change the weight; they define the axis
-            # value.  We record a zero contribution so downstream diagnostics
-            # can still see the per-mapping ledger.
-            mapping_contribution = np.zeros(request.particle_count, dtype=float)
+                # DeterministicTransform — axis-value computation only.
+                # Write the axis particles; zero weight contribution.
+                particles[:, axis_index] = contribution
+                mapping_contribution = np.zeros(request.particle_count, dtype=float)
         else:  # LIKELIHOOD
             variable_index = name_to_index[mapping.variables[0]]
             obs_lower, obs_upper = mapping.observation  # type: ignore[misc]
@@ -511,15 +536,9 @@ def compile_particle_surface(request: SurfaceRequest) -> ParticleSurface:
             scale = float(mapping.observation_scale)  # type: ignore[arg-type]
             deviation = np.abs(samples[:, variable_index] - centre)
             outside = np.maximum(deviation - half_width, 0.0)
-            # Bounded flat penalty outside the interval with a light Gaussian
-            # tail.  The flat step preserves bimodal shapes when competing
-            # likelihoods protect disjoint intervals; the Gaussian tail only
-            # distinguishes particles that fall far from any observation.
             flat_penalty = (outside > 0).astype(float)
             tail_penalty = flat_penalty + 0.001 * (outside / max(scale, 1e-12)) ** 2
             mapping_contribution = -tail_penalty
-            # Likelihood mappings expose the variable value on the axis so
-            # diagnostics still observe the original input distribution.
             particles[:, axis_index] = samples[:, variable_index]
         log_potential = log_potential + mapping_contribution
         mapping_breakdown[mapping.mapping_id] = mapping_contribution
@@ -610,6 +629,7 @@ def compile_particle_surface_cached(request: SurfaceRequest) -> ParticleSurface:
 __all__ = [
     "CalibrationBasis",
     "CalibrationRecord",
+    "CompiledIR",
     "CoverageSemantics",
     "MappingKind",
     "MappingSpec",
