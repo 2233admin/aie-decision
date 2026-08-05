@@ -3,22 +3,42 @@
     "id": "sentrux-native",
     "version": "2.2.0"
   },
+  "godFiles": [
+    {
+      "functions": 22,
+      "loc": 852,
+      "path": "src/aie_decision/wave_authority.py",
+      "rule": "loc>800"
+    },
+    {
+      "functions": 43,
+      "loc": 432,
+      "path": "tests/test_joint_schema.py",
+      "rule": "functions>25&&loc>400"
+    },
+    {
+      "functions": 26,
+      "loc": 573,
+      "path": "tests/test_particle_surface.py",
+      "rule": "functions>25&&loc>400"
+    }
+  ],
   "metrics": {
-    "branch_density_per_fn": 14,
+    "branch_density_per_fn": 13,
     "complex_fn_count": 0,
-    "coupling_score": 60.51,
-    "cross_module_edges": 478,
+    "coupling_score": 66.2,
+    "cross_module_edges": 523,
     "cycle_count": 0,
     "files": 79,
-    "functions": 1024,
-    "god_file_count": 6,
+    "functions": 963,
+    "god_file_count": 3,
     "import_modeled_files": 79,
-    "max_complexity": 14,
-    "quality_signal": 8795,
-    "total_import_edges": 478
+    "max_complexity": 13,
+    "quality_signal": 9110,
+    "total_import_edges": 523
   },
-  "savedAt": 1785872563,
-  "schema": "code-intel-sentrux-baseline.v4",
+  "savedAt": 1785927197,
+  "schema": "code-intel-sentrux-baseline.v5",
   "scope": ".",
-  "sourceCommit": "b300bb43dce6cf38ed341b1eca33c5ef495a645b"
+  "sourceCommit": "6e0ef6788cd694cec57c5d1c09fdc822839025d9"
 }
