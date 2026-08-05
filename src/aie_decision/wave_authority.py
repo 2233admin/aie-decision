@@ -18,6 +18,7 @@ is a **non-authoritative oracle** used only for cross-path parity checks.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import time
@@ -27,11 +28,14 @@ from typing import Any, Mapping, Sequence
 
 from .factor_ir import (
     FACTOR_IR_VERSION,
+    DeterministicTransform,
     FactorIR,
+    compile_axis_transform,
     compile_factor_ir,
 )
 from .joint_schema import (
     JOINT_SCHEMA_VERSION,
+    CompiledMapping,
     Evidence,
     MappingKind,
     MappingSpec,
@@ -487,37 +491,68 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
         schema_error = str(exc)
     _record("joint_schema", JOINT_SCHEMA_VERSION, schema_ok, {"run_id": run_id}, {"ok": schema_ok}, schema_error)
 
-    # -- 2. FactorIR compilation ---------------------------------------------
-    factor_irs: dict[str, FactorIR] = {}
+    # -- 2. FactorIR / axis-transform compilation ---------------------------
+    # Use the schema-compiled result (which now correctly splits
+    # dimensionless FactorIR from dimensional axis-transforms).  No
+    # (F)/(F) proxy — every formula is either a dimensionless factor or
+    # a dimensional axis-transform validated against its target axis.
     factor_ok = True
     factor_error = None
+    compiled_ir_trees: dict[str, ast.Expression] = {}
     try:
         full_dim_map = {str(var["name"]): dimension_of_unit(str(var["unit"])) for var in raw_variables}
+        # Build axis-index for dimension resolution.
+        axis_by_id: dict[str, dict[str, Any]] = {
+            str(axis.get("axis_id", axis.get("name", ""))): dict(axis)
+            for axis in outcome_axes_raw
+        }
         for m in _legal_mappings:
+            mapping_id = str(m["mapping_id"])
             formula = str(m.get("formula", "0"))
-            # Only pass variables actually referenced by the formula; the IR
-            # module rejects dimension-maps that contain extra variables.
             refs = _extract_variable_names(formula, set(full_dim_map.keys()))
             per_mapping_dims = {name: full_dim_map[name] for name in refs} if refs else {}
+            result_axis = str(
+                m.get("result_axis")
+                or (m.get("output_axes", [""])[0] if m.get("output_axes") else "")
+            )
+            target_axis = axis_by_id.get(result_axis, {})
+            target_unit = str(target_axis.get("unit", "dimensionless"))
             try:
+                # Try dimensionless FactorIR first.
                 ir = compile_factor_ir(
-                    mapping_id=str(m["mapping_id"]),
+                    mapping_id=mapping_id,
                     formula=formula,
                     variable_dimensions=per_mapping_dims,
                 )
+                compiled_ir_trees[mapping_id] = ir.tree
             except Exception:
-                # Dimensional axis-value formula → retry with dimensionless proxy.
-                proxy = f"({formula}) / ({formula})"
-                ir = compile_factor_ir(
-                    mapping_id=str(m["mapping_id"]),
-                    formula=proxy,
-                    variable_dimensions=per_mapping_dims,
-                )
-            factor_irs[str(m["mapping_id"])] = ir
+                # Dimensional formula — validate as axis-transform against
+                # the target axis dimension.
+                try:
+                    axis_dim = dimension_of_unit(target_unit)
+                    from .joint_schema import parse_composite_dimension
+                    axis_dim_map = parse_composite_dimension(axis_dim)
+                    if not axis_dim_map or len(axis_dim_map) != 1:
+                        raise FactorIRError(
+                            f"axis {result_axis} has composite dimension {axis_dim_map}; "
+                            f"cannot target axis-transform"
+                        )
+                    target_dim = next(iter(axis_dim_map.keys()))
+                    xform = compile_axis_transform(
+                        mapping_id=mapping_id,
+                        formula=formula,
+                        variable_dimensions=per_mapping_dims,
+                        target_axis_dimension=target_dim,
+                    )
+                    compiled_ir_trees[mapping_id] = xform.tree
+                except Exception as exc:
+                    factor_ok = False
+                    factor_error = str(exc)
+                    break
     except Exception as exc:
         factor_ok = False
         factor_error = str(exc)
-    _record("factor_ir", FACTOR_IR_VERSION, factor_ok, {"mapping_count": len(factor_irs)}, {"count": len(factor_irs)}, factor_error)
+    _record("factor_ir", FACTOR_IR_VERSION, factor_ok, {"mapping_count": len(compiled_ir_trees)}, {"count": len(compiled_ir_trees)}, factor_error)
 
     # -- 3. Particle surface -------------------------------------------------
     ps_axes = tuple(
@@ -541,6 +576,7 @@ def run_authoritative_wave(payload: Mapping[str, Any]) -> AuthoritativeWaveResul
         variables=ps_variables,
         mappings=ps_mappings,
         coverage_semantics=CoverageSemantics.UNCALIBRATED_RANGE,
+        compiled_ir_trees=compiled_ir_trees if compiled_ir_trees else None,
     )
     surface_ok = True
     surface_error = None

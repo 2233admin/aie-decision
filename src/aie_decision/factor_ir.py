@@ -1,7 +1,9 @@
-"""Restricted factor IR producing a dimensionless log-potential.
+"""Restricted factor IR for dimensionless log-potential and deterministic axis transforms.
 
-The factor IR is the executable form of a single ``MappingSpec`` formula.  It
-is intentionally tiny:
+This module provides two compiled IR contracts that together cover every
+``MappingSpec`` formula:
+
+**FactorIR** — dimensionless log-potential for likelihood/support weighting.
 
 * Only names, numeric literals, parentheses and the four arithmetic
   operators are accepted.  No attribute access, calls, comparisons, or
@@ -14,9 +16,18 @@ is intentionally tiny:
   that produces a dimensional value is rejected before any particle is
   evaluated.
 
-The IR is consumed by :mod:`aie_decision.joint_schema` but lives in its
-own module so that the compile/evaluate contract can be tested without
-the heavier wave-loop machinery.
+**DeterministicTransform** — dimensional axis-value computation whose output
+dimension equals the target result-axis dimension.
+
+* Uses the same restricted grammar as FactorIR.
+* The output dimension MUST match the declared target-axis dimension
+  exactly (not just be dimensionless).  A dimensionless output from an
+  axis-value formula is rejected because the axis needs dimensional values.
+
+The IRs are consumed by :mod:`aie_decision.joint_schema` and
+:mod:`aie_decision.particle_surface` but live in their own module so that
+the compile/evaluate contract can be tested without the heavier wave-loop
+machinery.
 """
 
 from __future__ import annotations
@@ -83,7 +94,144 @@ class FactorIR:
 
 
 # ---------------------------------------------------------------------------
-# Parser + dimension analysis
+# DeterministicTransform — dimensional axis-value computation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DeterministicTransform:
+    """Compiled axis-transform formula whose output dimension matches the target axis.
+
+    Unlike :class:`FactorIR` which requires a dimensionless output for
+    likelihood/support weighting, a ``DeterministicTransform`` computes the
+    axis value directly.  The formula's output dimension must equal the
+    target axis's dimension (e.g. a formula with output ``time`` can target
+    an axis whose unit resolves to ``time``).
+    """
+
+    schema_version: str
+    mapping_id: str
+    formula: str
+    input_dimensions: tuple[tuple[str, str], ...]
+    output_dimension: tuple[tuple[str, int], ...]
+    target_axis_dimension: str
+    referenced_variables: tuple[str, ...]
+    tree: ast.Expression
+
+    def __post_init__(self) -> None:
+        if not self.mapping_id.strip():
+            raise FactorIRError("DeterministicTransform.mapping_id is required")
+        if not self.formula.strip():
+            raise FactorIRError("DeterministicTransform.formula is required")
+        if not self.target_axis_dimension:
+            raise FactorIRError("DeterministicTransform.target_axis_dimension is required")
+        names = [name for name, _ in self.input_dimensions]
+        if len(set(names)) != len(names):
+            raise FactorIRError(
+                "DeterministicTransform.input_dimensions must declare each variable once"
+            )
+        if set(names) != set(self.referenced_variables):
+            raise FactorIRError(
+                "DeterministicTransform.referenced_variables must match input_dimensions keys"
+            )
+        # Output dimension must be non-empty and must match exactly one
+        # dimension whose key equals target_axis_dimension.
+        od = dict(self.output_dimension)
+        if not od:
+            raise FactorIRError(
+                "DeterministicTransform output must be dimensional (matching target axis), "
+                f"not dimensionless; use FactorIR for dimensionless formulas"
+            )
+        if len(od) != 1:
+            raise FactorIRError(
+                f"DeterministicTransform output must resolve to exactly one dimension; "
+                f"got {od}"
+            )
+        resolved = next(iter(od.keys()))
+        if resolved != self.target_axis_dimension:
+            raise FactorIRError(
+                f"DeterministicTransform output dimension {resolved!r} does not match "
+                f"target axis dimension {self.target_axis_dimension!r}"
+            )
+
+    def evaluate(self, values: Mapping[str, float]) -> float:
+        """Evaluate the transform over one particle and return the axis value."""
+
+        missing = [name for name in self.referenced_variables if name not in values]
+        if missing:
+            raise FactorIRError(
+                f"missing variables in particle: {', '.join(sorted(missing))}"
+            )
+        result = _evaluate(self.tree, values)
+        if not isfinite(result):
+            raise FactorIRError(f"non-finite axis value: {result!r}")
+        return result
+
+
+def compile_axis_transform(
+    mapping_id: str,
+    formula: str,
+    variable_dimensions: Mapping[str, str],
+    target_axis_dimension: str,
+) -> DeterministicTransform:
+    """Parse the formula, verify the output matches *target_axis_dimension*, and freeze the IR.
+
+    This is the dimensional counterpart of :func:`compile_factor_ir`.  Where
+    that function requires a dimensionless output, this one requires the
+    output to resolve to exactly the target axis dimension.
+    """
+
+    tree = _parse_restricted(formula)
+    signature = _dimension_signature(tree, dict(variable_dimensions))
+    if not signature:
+        raise FactorIRError(
+            f"axis-transform formula output is dimensionless; "
+            f"use compile_factor_ir for dimensionless formulas"
+        )
+    if len(signature) != 1:
+        raise FactorIRError(
+            "axis-transform output must resolve to exactly one dimension; got "
+            + ", ".join(
+                f"{dim}^{'+' if exp > 0 else ''}{exp}"
+                for dim, exp in sorted(signature.items())
+            )
+        )
+    resolved = next(iter(signature.keys()))
+    if resolved != target_axis_dimension:
+        raise FactorIRError(
+            f"axis-transform output dimension {resolved!r} does not match "
+            f"target axis dimension {target_axis_dimension!r}"
+        )
+    references = _collect_references(tree)
+    missing = [name for name in references if name not in variable_dimensions]
+    if missing:
+        raise FactorIRError(
+            "formula references variables without a declared dimension: "
+            + ", ".join(sorted(missing))
+        )
+    extra = [name for name in variable_dimensions if name not in references]
+    if extra:
+        raise FactorIRError(
+            "dimension map contains variables not referenced by the formula: "
+            + ", ".join(sorted(extra))
+        )
+    ordered_dimensions = tuple(
+        (name, variable_dimensions[name]) for name in references
+    )
+    return DeterministicTransform(
+        schema_version=FACTOR_IR_VERSION,
+        mapping_id=mapping_id,
+        formula=formula.strip(),
+        input_dimensions=ordered_dimensions,
+        output_dimension=tuple(sorted(signature.items())),
+        target_axis_dimension=target_axis_dimension,
+        referenced_variables=references,
+        tree=tree,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parser + dimension analysis (shared by FactorIR and DeterministicTransform)
 # ---------------------------------------------------------------------------
 
 _ALLOWED_NODES: tuple[type[ast.AST], ...] = (
@@ -282,7 +430,9 @@ def compile_factor_ir(
 __all__ = [
     "DIMENSIONLESS",
     "FACTOR_IR_VERSION",
+    "DeterministicTransform",
     "FactorIR",
     "FactorIRError",
+    "compile_axis_transform",
     "compile_factor_ir",
 ]

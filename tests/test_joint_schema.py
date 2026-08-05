@@ -320,12 +320,11 @@ class CompileTests(TestCase):
         entry = compiled[0]
         self.assertTrue(isclose(entry.log_potential({"route_km": 1.0, "route_m": 100.0}), 10.0))
 
-    def test_compile_dimensional_formula_adapted_via_proxy(self):
+    def test_compile_dimensional_formula_compiles_as_axis_transform(self):
         # A dimensionally valid but dimensional formula (e.g. same-dimension
-        # addition) is adapted through a dimensionless proxy so that the
-        # FactorIR dimensionless-output invariant is preserved.  The proxy
-        # ``(expr) / (expr)`` cancels the output dimension while still
-        # validating that every internal operation is dimensionally sound.
+        # addition) is compiled as a DeterministicTransform whose output
+        # dimension matches the target axis.  No (F)/(F) proxy is used —
+        # the formula is validated directly against the axis dimension.
         axis = _axis("delivery", unit="hour")
         variable = _variable("lane_hours", unit="hour", lower=1.0, upper=5.0)
         mapping = _mapping("leg", "lane_hours + lane_hours", ("lane_hours",))
@@ -336,10 +335,17 @@ class CompileTests(TestCase):
             mappings=(mapping,),
         )
         self.assertEqual(len(compiled), 1)
-        ir = compiled[0].factor_ir
-        self.assertIsNotNone(ir)
-        # The proxy is dimensionless (FactorIR invariant preserved).
-        self.assertEqual(ir.output_dimension, ())
+        # Dimensional formula → FactorIR is None, transform is set.
+        self.assertIsNone(compiled[0].factor_ir)
+        self.assertIsNotNone(compiled[0].transform)
+        xform = compiled[0].transform
+        # The transform's output must match the axis's time dimension.
+        from aie_decision.joint_schema import dimension_of_unit
+        axis_dim = dimension_of_unit("hour")
+        self.assertEqual(xform.target_axis_dimension, axis_dim)
+        # Formula evaluates correctly as an axis value.
+        result = xform.evaluate({"lane_hours": 3.0})
+        self.assertEqual(result, 6.0)
 
     def test_compile_rejects_cross_dimension_arithmetic(self):
         axis = _axis("delivery", unit="hour")

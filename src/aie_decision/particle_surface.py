@@ -196,7 +196,14 @@ class CalibrationRecord:
 
 @dataclass(frozen=True, slots=True)
 class SurfaceRequest:
-    """Declarative description of the wave surface to compile."""
+    """Declarative description of the wave surface to compile.
+
+    When *compiled_ir_trees* is provided, the surface evaluator uses the
+    pre-validated AST trees from compiled FactorIR/DeterministicTransform
+    objects instead of re-parsing formula strings.  This eliminates the
+    duplicate parser path and makes the compiled IR the single evaluation
+    authority.
+    """
 
     question_id: str
     seed: int
@@ -207,6 +214,7 @@ class SurfaceRequest:
     coverage_semantics: CoverageSemantics = CoverageSemantics.UNCALIBRATED_RANGE
     calibration: CalibrationRecord | None = None
     schema_version: str = "particle_surface/1"
+    compiled_ir_trees: Mapping[str, ast.Expression] | None = None
 
     def __post_init__(self) -> None:
         if not self.question_id.strip():
@@ -471,10 +479,24 @@ def compile_particle_surface(request: SurfaceRequest) -> ParticleSurface:
     mapping_breakdown: dict[str, np.ndarray] = {}
     log_potential = np.zeros(request.particle_count, dtype=float)
     particles = np.zeros((request.particle_count, len(axis_names)), dtype=float)
+    # Build the set of valid variable names once.
+    allowed_vars = set(variable_names)
+
     for mapping in request.mappings:
         axis_index = axis_names.index(mapping.result_axis)
         if mapping.kind is MappingKind.FORMULA:
-            parsed = _parse_formula(mapping.expression or "", set(variable_names))
+            # Prefer the pre-compiled IR tree (single authority).  Fall back
+            # to raw formula parsing only when no compiled IR is provided.
+            ir_tree = (
+                request.compiled_ir_trees.get(mapping.mapping_id)
+                if request.compiled_ir_trees is not None
+                else None
+            )
+            if ir_tree is not None:
+                # Use the validated IR tree — no re-parsing.
+                parsed = _ParsedFormula(ir_tree, tuple(mapping.variables))
+            else:
+                parsed = _parse_formula(mapping.expression or "", allowed_vars)
             contribution = _evaluate_formula_vector(parsed, samples, name_to_index)
             particles[:, axis_index] = contribution
             # Formula mappings do not change the weight; they define the axis

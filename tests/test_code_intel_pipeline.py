@@ -65,46 +65,56 @@ def _parse_result(proc: subprocess.CompletedProcess) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_ambient_pipeline_reports_domain_failed():
-    """``code-intel . --mode normal --json`` with NO env injection exits 10.
+def test_ambient_pipeline_must_pass_exit_zero():
+    """``code-intel . --mode normal --json`` MUST exit 0 (mandatory conformance).
 
-    Old beta.5 manifest blocker is stale (2026-08-05).  The canonical
-    beta.5 pipeline command currently exits 10 with ``domain_failed`` due
-    to manifest reconciliation.  This is the known ambient baseline —
-    the test asserts the current actual behaviour rather than the earlier
-    mandatory-conformance assertion that required exit 0.
+    This is the AIE architecture gate.  Exit 10 / ``domain_failed`` is a
+    real failure — manifest reconciliation fails because canonical beta.5
+    has no repo-local manifest discovery mechanism.  The test serves as a
+    **failing ratchet**: it MUST NOT pass until the architecture gate is
+    resolved.  Never save a new baseline that masks this.
+
+    The prior version of this test accepted exit 10 as a "known baseline"
+    — that was a weakening of the mandatory conformance assertion.  This
+    test restores the requirement: exit 0 is the only acceptable outcome.
     """
     proc = _run_pipeline()
     result = _parse_result(proc)
 
-    # Known ambient baseline: exit 10, outcome "domain_failed".
-    assert proc.returncode == 10, (
-        f"expected exit 10 (domain_failed baseline), got {proc.returncode}\n"
+    # Mandatory conformance: the pipeline must exit 0 with a successful
+    # outcome.  Any other exit code or outcome is a gate failure.
+    assert proc.returncode == 0, (
+        f"Code Intel pipeline MUST exit 0 (mandatory conformance).  "
+        f"Got exit {proc.returncode} — architecture gate is FAILING.\n"
         f"  Diagnostic: {result.get('diagnostic', 'none')}\n"
         f"  Failure node: {result.get('failureNode', 'none')}\n"
-        f"  stderr: {proc.stderr}"
+        f"  stderr: {proc.stderr}\n"
+        f"This is a FAILING RATCHET — do not save a new baseline."
     )
-    assert result["outcome"] == "domain_failed", (
-        f"expected outcome 'domain_failed', got {result['outcome']!r}"
+    assert result["outcome"] == "passed", (
+        f"Expected outcome 'passed', got {result['outcome']!r}.  "
+        f"Architecture gate is FAILING."
     )
-    # The command must still produce valid JSON.
     assert result["schema"] == "code-intel-primary-result.v1"
     assert isinstance(result.get("failures"), dict)
 
 
-def test_ambient_pipeline_diagnostic_confirms_blocked():
-    """The ambient failure diagnostic confirms the pipeline is blocked.
+def test_ambient_pipeline_failure_must_be_manifest_reconciliation():
+    """When the pipeline fails, the diagnostic must identify manifest reconciliation.
 
-    Canonical beta.5 cannot resolve the correct manifest from the ambient
-    environment.  The diagnostic varies depending on repo state but always
-    includes either ``manifest reconciliation failed`` or ``architecture
-    gate failure`` — both pointing to manifest/pipeline root resolution.
+    This test isolates the root cause: canonical beta.5 cannot resolve the
+    correct manifest from the ambient environment.  It documents the specific
+    blocker so future resolution targets the correct mechanism.
 
-    This test documents the specific root cause so future resolution can
-    target the correct mechanism.
+    If the pipeline passes (exit 0), this test is a no-op — the architecture
+    gate is resolved and the mandatory-conformance test above proves it.
     """
     proc = _run_pipeline()
     result = _parse_result(proc)
+
+    if proc.returncode == 0:
+        # Pipeline passes — architecture gate resolved.  No-op.
+        return
 
     diagnostic = result.get("diagnostic", "")
     valid_diagnostics = [

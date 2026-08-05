@@ -53,7 +53,22 @@ OutcomeSpace ---- VariableSpec + Evidence
 
 ### 1. Use a bipartite factor graph as the mapping model
 
-`VariableSpec` and `OutcomeAxis` are nodes; `MappingSpec` is a hyperedge that can connect multiple inputs and outputs. A mapping compiles to a restricted `FactorIR` with a dimensionless `log_potential` output.
+`VariableSpec` and `OutcomeAxis` are nodes; `MappingSpec` is a hyperedge that can connect multiple inputs and outputs. A mapping compiles to one of two restricted IR forms:
+
+* **FactorIR** — dimensionless `log_potential` output for likelihood/support weighting.
+  The output dimension MUST be empty (every exponent zero).  Used when the
+  formula produces a dimensionless score that contributes to particle
+  weights (e.g. a ratio, a probability, a normalised distance).
+
+* **DeterministicTransform** — dimensional output whose dimension equals the
+  target result-axis dimension.  Used when the formula computes the axis
+  value directly (e.g. `travel_days + buffer_days` produces a value in
+  the "time" dimension that lands on the "event_time" axis).
+
+Only one IR form is set per FORMULA mapping.  The `(F)/(F)` proxy pattern
+is explicitly rejected — it replaces any dimensional formula with the
+constant 1.0 and risks division-by-zero when the expression evaluates to
+zero.
 
 This supports one-to-many, many-to-one and interaction mappings without forcing heterogeneous units into a vector addition. The restricted IR also gives validation, serialization and backend parity.
 

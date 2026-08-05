@@ -22,8 +22,10 @@ from typing import Mapping, Sequence
 from .factor_ir import (
     DIMENSIONLESS,
     FACTOR_IR_VERSION,
+    DeterministicTransform,
     FactorIR,
     FactorIRError,
+    compile_axis_transform,
     compile_factor_ir,
 )
 
@@ -534,14 +536,23 @@ class MappingSpec:
 
 @dataclass(frozen=True, slots=True)
 class CompiledMapping:
-    """A ``MappingSpec`` after dimension validation and IR compilation."""
+    """A ``MappingSpec`` after dimension validation and IR compilation.
+
+    For FORMULA mappings, exactly one of *factor_ir* or *transform* is set:
+
+    * *factor_ir* — the formula is dimensionless and contributes a
+      log-potential weight.
+    * *transform* — the formula is dimensional and its output matches the
+      target axis dimension; it computes the axis value directly.
+    """
 
     schema_version: str
     mapping: MappingSpec
     axis: OutcomeAxis
     variables: tuple[VariableSpec, ...]
     variable_dimensions: dict[str, str]
-    factor_ir: FactorIR | None
+    factor_ir: FactorIR | None = None
+    transform: DeterministicTransform | None = None
 
     def __post_init__(self) -> None:
         if not self.variables:
@@ -553,9 +564,14 @@ class CompiledMapping:
                 f"CompiledMapping variable set must match mapping.variables: "
                 f"{declared} vs {referenced}"
             )
+        forms = sum(1 for v in (self.factor_ir, self.transform) if v is not None)
+        if self.mapping.kind is MappingKind.FORMULA and forms != 1:
+            raise JointSchemaError(
+                "CompiledMapping with FORMULA kind must set exactly one of factor_ir or transform"
+            )
 
     def log_potential(self, values: Mapping[str, float]) -> float:
-        """Evaluate the compiled IR on one particle.  Requires FORMULA mappings.
+        """Evaluate the compiled IR on one particle.  Only FactorIR contributes to weight.
 
         Values are first normalised to the canonical unit of each variable's
         declared unit so that legal unit conversion (km ↔ m, hour ↔ s) is
@@ -575,6 +591,29 @@ class CompiledMapping:
             factor = _UNIT_TABLE[unit_key][1]
             canonical_values[variable.name] = raw * factor
         return self.factor_ir.log_potential(canonical_values)
+
+    def evaluate_axis(self, values: Mapping[str, float]) -> float:
+        """Evaluate the axis-transform IR on one particle.
+
+        Only valid when *transform* is set.  Values are normalised to the
+        canonical unit before evaluation.
+        """
+
+        if self.transform is None:
+            raise JointSchemaError(
+                "CompiledMapping.evaluate_axis called but transform is None"
+            )
+        canonical_values: dict[str, float] = {}
+        for variable in self.variables:
+            raw = values[variable.name]
+            if not isfinite(raw):
+                raise JointSchemaError(
+                    f"variable {variable.name!r} produced non-finite value: {raw}"
+                )
+            unit_key = variable.unit.strip()
+            factor = _UNIT_TABLE[unit_key][1]
+            canonical_values[variable.name] = raw * factor
+        return self.transform.evaluate(canonical_values)
 
 
 def compile_joint_schema(
@@ -627,38 +666,56 @@ def compile_joint_schema(
         referenced = tuple(variable_index[name] for name in mapping.variables)
         dimensions = {variable.name: dimension_of_unit(variable.unit) for variable in referenced}
         factor_ir: FactorIR | None = None
+        factor_ir: FactorIR | None = None
+        transform: DeterministicTransform | None = None
         if mapping.kind is MappingKind.FORMULA:
             try:
+                # First try: compile as dimensionless FactorIR.
                 factor_ir = compile_factor_ir(
                     mapping.mapping_id,
                     mapping.expression or "",
                     dimensions,
                 )
-            except FactorIRError as exc:
-                # If the formula is dimensionally valid but produces a
-                # dimensional output, retry with a dimensionless proxy.
-                # The proxy ``(expr) / (expr)`` cancels the output
-                # dimension while still validating internal operations:
-                # a dimension mismatch inside the expression will fail
-                # before the output-dimension check.
-                msg = str(exc)
+            except FactorIRError as factor_exc:
+                msg = str(factor_exc)
                 if "dimensionless" in msg.lower():
-                    expr = mapping.expression or ""
-                    proxy = f"({expr}) / ({expr})"
+                    # The formula produced a dimensional output — try
+                    # compiling as an axis-transform whose output must
+                    # match the target axis dimension.
                     try:
-                        factor_ir = compile_factor_ir(
+                        dimension_of_unit(target_axis.unit)
+                        # Resolve the axis unit to its dimension key.
+                        axis_dim = dimension_of_unit(target_axis.unit)
+                        # The axis dim may be a composite key — parse it.
+                        axis_dim_map = parse_composite_dimension(axis_dim)
+                        if not axis_dim_map:
+                            raise JointSchemaError(
+                                f"mapping {mapping.mapping_id}: target axis "
+                                f"{target_axis.axis_id} is dimensionless — "
+                                f"cannot compile dimensional axis-transform"
+                            ) from factor_exc
+                        if len(axis_dim_map) != 1:
+                            raise JointSchemaError(
+                                f"mapping {mapping.mapping_id}: target axis "
+                                f"{target_axis.axis_id} has composite dimension "
+                                f"{axis_dim_map}; axis-transform requires a "
+                                f"single dimension"
+                            ) from factor_exc
+                        target_dim = next(iter(axis_dim_map.keys()))
+                        transform = compile_axis_transform(
                             mapping.mapping_id,
-                            proxy,
+                            mapping.expression or "",
                             dimensions,
+                            target_axis_dimension=target_dim,
                         )
-                    except FactorIRError:
+                    except FactorIRError as axis_exc:
                         raise JointSchemaError(
-                            f"mapping {mapping.mapping_id}: {exc}"
-                        ) from exc
+                            f"mapping {mapping.mapping_id}: {axis_exc}"
+                        ) from axis_exc
                 else:
                     raise JointSchemaError(
-                        f"mapping {mapping.mapping_id}: {exc}"
-                    ) from exc
+                        f"mapping {mapping.mapping_id}: {factor_exc}"
+                    ) from factor_exc
         elif mapping.kind is MappingKind.LIKELIHOOD:
             variable = referenced[0]
             if dimension_of_unit(variable.unit) != dimension_of_unit(target_axis.unit):
@@ -686,6 +743,7 @@ def compile_joint_schema(
                 variables=referenced,
                 variable_dimensions=dimensions,
                 factor_ir=factor_ir,
+                transform=transform,
             )
         )
     return tuple(compiled)
@@ -696,6 +754,7 @@ __all__ = [
     "EVIDENCE_SCHEMA_VERSION",
     "JOINT_SCHEMA_VERSION",
     "CompiledMapping",
+    "DeterministicTransform",
     "DimensionMismatchError",
     "EpistemicType",
     "Evidence",
@@ -708,6 +767,7 @@ __all__ = [
     "VariableSpec",
     "VariableStatus",
     "compatible_units",
+    "compile_axis_transform",
     "compile_joint_schema",
     "conversion_factor",
     "dimension_of_unit",
