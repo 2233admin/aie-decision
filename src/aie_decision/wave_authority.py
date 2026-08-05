@@ -63,12 +63,15 @@ from .wave_diagnostics import (
     diagnostics_as_mapping,
     summarise_surface,
 )
-from .wave_loop import (
+from .wave_loop_contract import (
     WAVE_LEDGER_VERSION,
-    CompiledFactorIR as LoopCompiledIR,
     WaveLoopError,
+)
+from .wave_loop_replay import (
     create_wave_checkpoint,
     replay_wave_ledger,
+)
+from .wave_loop import (
     run_wave_loop,
 )
 
